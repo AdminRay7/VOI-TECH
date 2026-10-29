@@ -15,7 +15,7 @@
   border-bottom: 1px solid var(--sidebar-border);
   background: rgba(10, 10, 15, 0.8);
   backdrop-filter: blur(10px);
-  position: fixed; /* Keep it at the top even when scrolling */
+  position: fixed; /* Floats on top */
   top: 0;
   left: 0;
   width: 100%;
@@ -23,9 +23,9 @@
   box-sizing: border-box;
 }
 
-/* Push page content down so it's not hidden by the navbar */
+/* Pushes the page content down so the navbar doesn't cover it */
 body {
-  padding-top: 65px; 
+  padding-top: 65px !important; 
 }
 
 .menu-btn {
