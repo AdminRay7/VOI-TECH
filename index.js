@@ -1,4 +1,3 @@
-// index.js — 303-XMD bootstrap
 require("dotenv").config();
 
 const {
@@ -6,283 +5,168 @@ const {
     DisconnectReason,
     Browsers,
     makeCacheableSignalKeyStore,
-    useMultiFileAuthState,
     fetchLatestBaileysVersion
 } = require("@whiskeysockets/baileys");
 const pino = require("pino");
 const express = require("express");
 const path = require("path");
-const fs = require("fs");
-
+const mongoose = require("mongoose");
 const config = require("./config");
 const handler = require("./presenter");
 const services = require("./lib/services");
+const { useMongoAuthState } = require("./lib/mongoAuthState");
 
-// ---- Session state ----
-const session = {
-    conn: null,
-    connecting: false,
-    pairingReady: false,
-    socketReady: false,
-    reconnectTimer: null,
-    pairing: null,
-    bootPromise: null,
-    shuttingDown: false
-};
+const app = express();
+app.use(express.json());
+app.use(express.static(path.join(__dirname, "public")));
 
-const RECONNECT_MS = 5000;
-const PAIR_TIMEOUT_MS = 30000;
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+// ---- Active Sessions Map ----
+// Key: sessionId (phone number), Value: Baileys Socket
+const activeSockets = new Map();
+const pairingCodes = new Map(); // Store codes temporarily for the frontend
 
-// ---- Ensure session dir exists ----
-if (!fs.existsSync(config.sessionDir)) {
-    fs.mkdirSync(config.sessionDir, { recursive: true });
+// ---- Connect to MongoDB ----
+if (config.mongodb) {
+    mongoose.connect(config.mongodb).then(() => console.log("✅ MongoDB connected")).catch(e => console.error("❌ MongoDB:", e.message));
+} else {
+    console.error("❌ MONGODB_URI is required for multi-user mode!");
+    process.exit(1);
 }
 
 // ============================================================
-// BOOT SOCKET
+// START A SOCKET FOR A SPECIFIC USER
 // ============================================================
-function bootSocket() {
-    if (session.socketReady && session.conn) return Promise.resolve(session.conn);
-    if (session.bootPromise) return session.bootPromise;
-    if (session.shuttingDown) return Promise.reject(new Error("Shutting down"));
+async function connectUser(phoneNumber) {
+    const sessionId = phoneNumber.replace(/\D/g, "");
+    if (activeSockets.has(sessionId)) return; // Already running
 
-    session.bootPromise = (async () => {
-        try {
-            const { state, saveCreds } = await useMultiFileAuthState(config.sessionDir);
-            const { version } = await fetchLatestBaileysVersion();
+    const { state, saveCreds } = await useMongoAuthState(sessionId);
+    const { version } = await fetchLatestBaileysVersion();
 
-            const conn = makeWASocket({
-                version,
-                auth: {
-                    creds: state.creds,
-                    keys: makeCacheableSignalKeyStore(state.keys, pino({ level: config.logLevel }))
-                },
-                logger: pino({ level: config.logLevel }),
-                browser: Browsers.macOS("Safari"),
-                syncFullHistory: false,
-                markOnlineOnConnect: false,
-                connectTimeoutMs: 60000,
-                defaultQueryTimeoutMs: 60000,
-                keepAliveIntervalMs: 60000,
-                retryRequestDelayMs: 2000
-            });
+    const sock = makeWASocket({
+        version,
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" }))
+        },
+        logger: pino({ level: "silent" }),
+        browser: Browsers.ubuntu("Chrome"), // Use ubuntu to avoid pairing issues
+        syncFullHistory: false,
+        markOnlineOnConnect: false,
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 60000,
+        keepAliveIntervalMs: 25000, // Heroku WebSocket fix (ping every 25s)
+        retryRequestDelayMs: 2000
+    });
 
-            session.conn = conn;
-            conn.ev.on("creds.update", saveCreds);
+    activeSockets.set(sessionId, sock);
+    sock.ev.on("creds.update", saveCreds);
 
-            conn.ev.on("connection.update", (update) => {
-                handleConnectionUpdate(conn, update).catch(err => {
-                    console.error("connection.update handler:", err?.message || err);
-                });
-            });
+    sock.ev.on("connection.update", async (update) => {
+        const { connection, lastDisconnect } = update;
 
-            conn.ev.on("messages.upsert", async (evt) => {
-                if (!evt?.messages?.length) return;
-                try {
-                    await handler(conn, evt, {
-                        userId: conn.user?.id || "default",
-                        config,
-                        helpers: {},
-                        services
-                    });
-                } catch (e) {
-                    console.error("handler error:", e?.stack || e?.message || e);
-                }
-            });
-
-            return conn;
-        } finally {
-            session.bootPromise = null;
+        if (connection === "open") {
+            console.log(`✅ User connected: ${sessionId}`);
+            pairingCodes.delete(sessionId); // Clear the code, it's connected now
         }
-    })();
 
-    return session.bootPromise;
-}
+        if (connection === "close") {
+            const code = lastDisconnect?.error?.output?.statusCode;
+            console.log(`❌ User ${sessionId} closed, code: ${code}`);
+            
+            activeSockets.delete(sessionId);
 
-// ============================================================
-// CONNECTION UPDATE
-// ============================================================
-async function handleConnectionUpdate(conn, update) {
-    const { connection, lastDisconnect } = update;
-
-    if (connection === "connecting") {
-        session.connecting = true;
-        const until = Date.now() + 15000;
-        while (Date.now() < until && session.conn === conn && !session.pairingReady) {
-            if (conn.ws?.readyState === 1) {
-                session.pairingReady = true;
-                console.log("🔌 pairing-ready (ws open)");
-                break;
+            // 428 = Heroku Timeout, 515 = Restart required
+            if (code === 428 || code === 515) {
+                console.log(`🔄 Reconnecting ${sessionId} immediately...`);
+                setTimeout(() => connectUser(sessionId), 1000);
+            } 
+            // 401 = Logged out
+            else if (code === 401) {
+                console.log(`🚪 User ${sessionId} logged out.`);
+                // Delete session from Mongo here if you want
             }
-            await sleep(100);
         }
-        return;
-    }
+    });
 
-    if (connection === "open") {
-        session.connecting = false;
-        session.pairingReady = true;
-        session.socketReady = true;
-        session.pairing = null;
-
-        if (session.reconnectTimer) {
-            clearTimeout(session.reconnectTimer);
-            session.reconnectTimer = null;
+    sock.ev.on("messages.upsert", async (evt) => {
+        if (!evt?.messages?.length) return;
+        try {
+            await handler(sock, evt, {
+                userId: sessionId,
+                config,
+                helpers: {},
+                services
+            });
+        } catch (e) {
+            console.error("Handler Error:", e);
         }
+    });
 
-        console.log("✅ connected as", conn.user?.id);
-        return;
-    }
-
-    if (connection === "close") {
-        session.connecting = false;
-        session.pairingReady = false;
-        session.socketReady = false;
-
-        if (session.conn !== conn) return;
-
-        const code = lastDisconnect?.error?.output?.statusCode;
-        console.log("❌ closed, code:", code);
-
-        if (session.shuttingDown) return;
-
-        // Terminal states — check BEFORE the reconnectTimer guard
-        if (code === 401 || code === DisconnectReason.loggedOut) {
-            console.log("🚪 logged out — stopping");
-            session.shuttingDown = true;
-            return;
-        }
-        if (code === 440) return; // replaced by another session
-
-        if (session.reconnectTimer) return;
-        session.reconnectTimer = setTimeout(() => {
-            session.reconnectTimer = null;
-            if (session.shuttingDown) return;
-            if (session.socketReady) return;
-            if (session.conn && !session.socketReady) session.conn = null;
-            bootSocket().catch(e => console.error("Reconnect:", e.message));
-        }, RECONNECT_MS);
-    }
+    return sock;
 }
 
 // ============================================================
-// PAIRING
+// WEB ENDPOINTS (API for the frontend)
 // ============================================================
-async function requestPairingCode(phoneNumber) {
-    if (!session.conn || (!session.pairingReady && !session.socketReady)) {
-        await bootSocket();
-    }
+app.post("/api/pair", async (req, res) => {
+    let { phone } = req.body;
+    if (!phone) return res.status(400).json({ error: "Phone number required" });
 
-    const deadline = Date.now() + PAIR_TIMEOUT_MS;
-    while (!session.pairingReady && Date.now() < deadline) {
-        if (!session.conn) throw new Error("Socket lost during pairing");
-        await sleep(250);
-    }
-    if (!session.pairingReady) throw new Error("Socket not ready for pairing");
-    if (session.conn.ws?.readyState !== 1) throw new Error("WebSocket not open");
+    phone = phone.replace(/\D/g, "");
+    if (phone.length < 10) return res.status(400).json({ error: "Invalid phone number" });
 
-    let code;
     try {
-        code = await session.conn.requestPairingCode(phoneNumber);
+        // 1. Start connection
+        const sock = await connectUser(phone);
+
+        // 2. Wait for socket to be ready for pairing
+        await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => reject(new Error("Timeout waiting for socket")), 15000);
+            const check = setInterval(() => {
+                if (sock.ws?.readyState === 1) {
+                    clearInterval(check);
+                    clearTimeout(timeout);
+                    resolve();
+                }
+            }, 500);
+        });
+
+        // 3. Request Code
+        const code = await sock.requestPairingCode(phone);
+        const formatted = code.match(/.{1,4}/g)?.join("-") || code;
+
+        pairingCodes.set(phone, formatted);
+        res.json({ code: formatted });
+
     } catch (e) {
-        if (!/Connection Closed|not open|timed out|closed/i.test(e?.message || "")) throw e;
-        await sleep(1500);
-        if (session.conn.ws?.readyState !== 1) throw new Error("Socket closed while requesting code");
-        code = await session.conn.requestPairingCode(phoneNumber);
+        console.error("Pair error:", e.message);
+        res.status(500).json({ error: e.message });
     }
+});
 
-    const formatted = code.match(/.{1,4}/g)?.join("-") || code;
-    session.pairing = formatted;
-    console.log("🔑 pairing code:", formatted);
-    return formatted;
-}
-
-// ============================================================
-// SHUTDOWN
-// ============================================================
-async function shutdown(reason) {
-    if (session.shuttingDown) return;
-    session.shuttingDown = true;
-    console.log(`🛑 shutting down (${reason})`);
-
-    if (session.reconnectTimer) {
-        clearTimeout(session.reconnectTimer);
-        session.reconnectTimer = null;
-    }
-    try { await session.conn?.end?.(undefined); } catch {}
-    await sleep(200); // let saveCreds flush
-    process.exit(0);
-}
-
-process.on("SIGINT",  () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("unhandledRejection", (err) => {
-    console.error("unhandledRejection:", err?.stack || err?.message || err);
+app.get("/api/status/:phone", (req, res) => {
+    const phone = req.params.phone.replace(/\D/g, "");
+    res.json({
+        connected: activeSockets.has(phone) && activeSockets.get(phone).ws?.readyState === 1,
+        code: pairingCodes.get(phone) || null
+    });
 });
 
 // ============================================================
-// EXPRESS (health + pairing helper page)
+// BOOT
 // ============================================================
-function startWeb() {
-    const app = express();
-    app.use(express.json());
-    app.use(express.static(path.join(__dirname, "public")));
+app.listen(config.port, () => {
+    console.log(`🌐 Web panel running on port ${config.port}`);
+});
 
-    app.get("/health", (_req, res) => {
-        res.json({
-            ok: true,
-            bot: config.botName,
-            version: config.version,
-            connected: !!session.socketReady,
-            pairing: session.pairing || null,
-            uptime: process.uptime()
-        });
-    });
-
-    app.get("/pairing", (_req, res) => {
-        res.json({ pairing: session.pairing || null, ready: !!session.pairingReady });
-    });
-
-    app.listen(config.port, () => {
-        console.log(`🌐 web on :${config.port}`);
-    });
-}
-
-// ============================================================
-// COMMANDS
-// ============================================================
-function bootCommands() {
-    handler.loadCommands(path.join(__dirname, "commands"));
-}
-
-// ============================================================
-// RUN
-// ============================================================
+// Resume any existing sessions from Database on startup
 (async () => {
-    bootCommands();
-    services.init(config);
-
     try {
-        await bootSocket();
-
-        // If creds exist → auto reconnects. If not → need phone to pair.
-        const credsPath = path.join(config.sessionDir, "creds.json");
-        const hasCreds = fs.existsSync(credsPath);
-
-        if (!hasCreds && config.phoneNumber) {
-            const code = await requestPairingCode(config.phoneNumber);
-            console.log(`\n→ Enter this code on your phone: ${code}\n`);
-        } else if (!hasCreds && !config.phoneNumber) {
-            console.warn("⚠️ No creds and no PHONE set. Set PHONE=2547XXXXXXXX in .env to pair.");
-        } else {
-            console.log("🔐 existing creds found — reconnecting");
+        const existing = await mongoose.connection.collection("mongosessions").find().toArray();
+        console.log(`🔄 Resuming ${existing.length} existing sessions...`);
+        for (const doc of existing) {
+            connectUser(doc._id).catch(e => console.error(`Failed to resume ${doc._id}:`, e.message));
         }
-    } catch (e) {
-        console.error("Boot error:", e?.message || e);
-    }
-
-    startWeb();
+    } catch (e) { /* ignore first boot if collection is empty */ }
 })();
-
-module.exports = { bootSocket, requestPairingCode, session };
