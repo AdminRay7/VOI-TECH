@@ -4,6 +4,7 @@ const express = require("express");
 const path = require("path");
 const mongoose = require("mongoose");
 const pino = require("pino");
+const fs = require("fs");
 const { MongoClient } = require("mongodb");
 const {
     default: makeWASocket,
@@ -17,14 +18,24 @@ const {
 } = require("@whiskeysockets/baileys");
 
 const config = require("./config");
-const handler = require("./presenter");
+const handler = require("./presenter"); // Your handler
 
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
 // ============================================================
-// 1. MONGODB AUTH STATE
+// 1. LOAD COMMANDS ON BOOT
+// ============================================================
+const commandsDir = path.join(__dirname, "commands");
+if (fs.existsSync(commandsDir)) {
+    handler.loadCommands(commandsDir);
+} else {
+    console.error("❌ Commands folder not found!");
+}
+
+// ============================================================
+// 2. MONGODB AUTH STATE
 // ============================================================
 async function useMongoDBAuthState(collection, sessionId) {
     const writeData = async (data, id) => {
@@ -97,7 +108,7 @@ async function useMongoDBAuthState(collection, sessionId) {
 }
 
 // ============================================================
-// 2. GLOBAL STATE & DB INIT
+// 3. GLOBAL STATE & DB INIT
 // ============================================================
 if (!global.sessions) global.sessions = new Map();
 if (!global.mongoClient) global.mongoClient = null;
@@ -117,7 +128,7 @@ function authStateCollection() {
 }
 
 // ============================================================
-// 3. PAIRING & BOOT LOGIC (With 401 Fix)
+// 4. PAIRING & BOOT LOGIC
 // ============================================================
 async function bootSocket(sessionId, session) {
     await initMongo();
@@ -173,34 +184,34 @@ async function bootSocket(sessionId, session) {
             const code = lastDisconnect?.error?.output?.statusCode;
             console.log(`❌ [${sessionId}] closed (${code})`);
 
-            // FIXED 401 LOGIC: Only delete if explicitly logged out
             if (code === 401 || code === DisconnectReason.loggedOut) {
-                console.log(`🚪 [${sessionId}] Logged out. Deleting session.`);
-                try { conn.ev.removeAllListeners(); conn.ws.close(); } catch {}
                 global.sessions.delete(sessionId);
                 await collection.deleteMany({ _id: { $regex: `^${sessionId}:` } });
                 return;
             }
-            
-            // Replaced by another session (Do nothing)
-            if (code === 440) return; 
+            if (code === 440) return;
 
-            // Reconnect for network issues (428, 503, etc)
             setTimeout(() => {
                 if (!global.sessions.has(sessionId)) return;
-                console.log(`🔄 [${sessionId}] Reconnecting...`);
                 bootSocket(sessionId, session).catch(e => console.error(`Reconnect ${sessionId}:`, e.message));
             }, 5000);
         }
     });
 
+    // ============================================================
+    // FIXED: MESSAGE HANDLER
+    // ============================================================
     conn.ev.on("messages.upsert", async (m) => {
-        const msg = m.messages[0];
-        if (!msg.message) return;
+        // Pass the entire event to the handler so presenter.js can read m.messages[0]
         try {
-            await handler(conn, m, { userId: sessionId, config, helpers: {}, services: {} });
+            await handler(conn, m, { 
+                userId: sessionId, 
+                config, 
+                helpers: {}, 
+                services: {} 
+            });
         } catch (err) {
-            console.error(`[${sessionId}] handler error:`, err.message);
+            console.error(`[${sessionId}] handler error:`, err.stack || err.message);
         }
     });
 
@@ -230,7 +241,6 @@ async function requestPairingCode(sessionId, phoneNumber) {
     try {
         code = await session.conn.requestPairingCode(phoneNumber);
     } catch (e) {
-        // Wait 2s and try once more if it fails
         await new Promise(r => setTimeout(r, 2000));
         code = await session.conn.requestPairingCode(phoneNumber);
     }
@@ -243,7 +253,7 @@ async function requestPairingCode(sessionId, phoneNumber) {
 }
 
 // ============================================================
-// 4. WEB ENDPOINTS
+// 5. WEB ENDPOINTS
 // ============================================================
 app.get("/api/pair", async (req, res) => {
     const sessionId = String(req.query.sessionId || "").trim();
@@ -284,7 +294,7 @@ app.get("/health", (req, res) => {
 });
 
 // ============================================================
-// 5. RESUME & BOOT
+// 6. RESUME & BOOT
 // ============================================================
 app.listen(config.port, () => {
     console.log(`🌐 Web panel running on port ${config.port}`);
