@@ -12,17 +12,12 @@
       color: #e6e6f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; box-sizing: border-box;
     }
     
-    .container {
-      display: flex; gap: 20px; width: 100%; max-width: 900px; flex-wrap: wrap; justify-content: center;
-    }
-
+    .container { display: flex; gap: 20px; width: 100%; max-width: 900px; flex-wrap: wrap; justify-content: center; }
     .card {
-      background: rgba(255,255,255,0.04);
-      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
       border-radius: 20px; padding: 30px; width: 100%; max-width: 400px;
       box-shadow: 0 20px 60px rgba(0,0,0,0.4); backdrop-filter: blur(8px); box-sizing: border-box;
     }
-    
     .terminal-card { max-width: 450px; display: flex; flex-direction: column; }
 
     h1 { margin: 0 0 8px; font-size: 26px; }
@@ -48,12 +43,18 @@
       padding: 20px; background: rgba(99,102,241,0.1); border-radius: 10px;
       border: 1px dashed #6366f1;
     }
-    .code { font-size: 32px; font-weight: bold; letter-spacing: 4px; color: #a5b4fc; margin-top: 10px; }
+    .code { font-size: 32px; font-weight: bold; letter-spacing: 4px; color: #a5b4fc; margin-top: 10px; margin-bottom: 15px; }
+    
+    .copy-btn {
+      background: rgba(99,102,241,0.2); color: #a5b4fc; border: 1px solid #6366f1;
+      padding: 8px 16px; border-radius: 6px; font-size: 14px; cursor: pointer; width: auto;
+    }
+    .copy-btn:hover { background: rgba(99,102,241,0.4); }
+
     .status { margin-top: 15px; font-size: 14px; text-align: center; color: #9a9ab5; }
     .success { color: #4ade80; }
     .error { color: #f87171; }
 
-    /* Terminal UI */
     .term-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-size: 13px; color: #8b8ba8;}
     .badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
     .badge.on { background: rgba(74,222,128,0.2); color: #4ade80; }
@@ -81,6 +82,7 @@
       <div class="code-box" id="codeBox">
         <div style="font-size:14px; color:#9a9ab5;">Enter this on your phone:</div>
         <div class="code" id="code"></div>
+        <button class="copy-btn" onclick="copyCode()">📋 Copy Code</button>
       </div>
 
       <div class="status" id="status"></div>
@@ -105,7 +107,19 @@
     let pollInterval;
     let sysInterval;
 
-    // ---- Pairing Logic ----
+    function copyCode() {
+      const codeText = document.getElementById("code").innerText;
+      if (!codeText) return;
+      
+      navigator.clipboard.writeText(codeText).then(() => {
+        const btn = document.querySelector(".copy-btn");
+        btn.innerText = "✅ Copied!";
+        setTimeout(() => { btn.innerText = "📋 Copy Code"; }, 2000);
+      }).catch(err => {
+        alert("Failed to copy. Please select and copy manually.");
+      });
+    }
+
     async function pair() {
       const phone = document.getElementById("phone").value.trim();
       const btn = document.getElementById("btn");
@@ -124,7 +138,6 @@
       codeBox.style.display = "none";
 
       try {
-        // GET Request matching your new index.js
         const res = await fetch(`/api/pair?sessionId=${phone}&num=${phone}`);
         const data = await res.json();
 
@@ -132,7 +145,7 @@
 
         codeEl.textContent = data.code;
         codeBox.style.display = "block";
-        status.innerHTML = "Waiting for you to link...";
+        status.innerHTML = ""; // No "Waiting..." text
         btn.textContent = "Code Generated";
         
         startPolling(phone);
@@ -145,25 +158,21 @@
 
     function startPolling(phone) {
       if (pollInterval) clearInterval(pollInterval);
-      const status = document.getElementById("status");
-      const btn = document.getElementById("btn");
-
+      
       pollInterval = setInterval(async () => {
         try {
           const res = await fetch(`/api/status/${phone}`);
           const data = await res.json();
 
+          // If connected, we don't show "Connected" text. 
+          // We just keep the code on the screen as requested.
           if (data.connected) {
             clearInterval(pollInterval);
-            document.getElementById("codeBox").style.display = "none";
-            status.innerHTML = '<span class="success">✅ Device linked successfully! Bot is now running.</span>';
-            btn.textContent = "Connected";
           }
         } catch (e) {}
       }, 3000);
     }
 
-    // ---- Live Status Logic ----
     async function checkStatus() {
       try {
         const res = await fetch("/health");
@@ -177,7 +186,6 @@
         sessBadge.textContent = `Sessions: ${data.activeSessions}`;
         sessBadge.className = `badge ${data.activeSessions > 0 ? "on" : "off"}`;
 
-        // Fake terminal logs for visual effect
         const term = document.getElementById("terminal");
         if (term.children.length === 1 && term.innerHTML.includes("Waiting")) {
             term.innerHTML = "";
@@ -202,7 +210,6 @@
         term.scrollTop = term.scrollHeight;
     }
 
-    // Start status checker immediately
     checkStatus();
     sysInterval = setInterval(checkStatus, 5000);
   </script>
