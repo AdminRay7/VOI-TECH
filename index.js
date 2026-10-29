@@ -26,17 +26,20 @@ const app = express();
 app.use(express.json());
 
 // ============================================================
-// WEB ROUTES
+// WEB ROUTES (Clean URLs)
 // ============================================================
 app.get("/", (req, res) => {
     res.sendFile(path.join(__dirname, "public", "dashboard.html"));
 });
 
-app.get("/index.html", (req, res) => {
+app.get("/pair", (req, res) => {
+    res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+app.get("/index", (req, res) => {
     res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static(path.join(__dirname, "public"), { extensions: ['html'] }));
 
 // ============================================================
 // AI WEB APIs
@@ -141,7 +144,6 @@ async function useMongoDBAuthState(collection, sessionId) {
 if (!global.sessions) global.sessions = new Map();
 if (!global.mongoClient) global.mongoClient = null;
 let pairingQueue = Promise.resolve();
-let isFirstBoot = true;
 
 async function initMongo() {
     if (!global.mongoClient) {
@@ -158,12 +160,13 @@ function authStateCollection() {
 // ============================================================
 // PAIRING & BOOT LOGIC
 // ============================================================
-async function bootSocket(sessionId, session) {
+async function bootSocket(sessionId, session, isResuming = false) {
     await initMongo();
     const collection = authStateCollection();
     const { state: waState, saveCreds } = await useMongoDBAuthState(collection, sessionId);
     const { version } = await fetchLatestBaileysVersion();
 
+    // If the credentials have a 'me' object, it means this is an existing linked account
     const isNewSession = !waState.creds.me;
 
     const conn = makeWASocket({
@@ -208,20 +211,34 @@ async function bootSocket(sessionId, session) {
                 );
             } catch {}
 
+            // ============================================================
+            // FIXED WELCOME & RESTART MESSAGE LOGIC
+            // ============================================================
             try {
-                const jid = conn.user.id.split(':')[0] + "@s.whatsapp.net";
-                const now = Date.now();
-                const lastSeen = session.lastSeen || 0;
-                const isReconnect = (now - lastSeen) < 60000; 
+                // conn.user.id might look like "254712345678:8@s.whatsapp.net"
+                // We split by ":" to remove the device ID, then split by "@" to get the clean number.
+                const rawId = conn.user?.id || "";
+                const cleanNumber = rawId.split(':')[0].split('@')[0];
+                const jid = `${cleanNumber}@s.whatsapp.net`;
 
-                if (isNewSession && isFirstBoot) {
-                    await conn.sendMessage(jid, { text: `╭─── • 🔑 • ───╮\n   *${config.botName}* ᴠ${config.version}\n╰─── • 🔑 • ───╯\n\n👋 *Welcome!* Your session has been successfully linked.\n\nType *${config.prefix}menu* to see my commands.` });
+                // If it's a new pairing (user just entered the code)
+                if (isNewSession && !isResuming) {
+                    await conn.sendMessage(jid, { 
+                        text: `╭─── • 🔑 • ───╮\n   *${config.botName}* ᴠ${config.version}\n╰─── • 🔑 • ───╯\n\n👋 *Welcome!* Your session has been successfully linked.\n\nType *${config.prefix}menu* to see my commands.` 
+                    });
+                    console.log(`📩 Welcome message sent to ${sessionId} (${jid})`);
                 } 
-                else if (!isNewSession && !isFirstBoot && !isReconnect) {
-                    await conn.sendMessage(jid, { text: `╭─── • 🔄 • ───╮\n   *${config.botName}* ᴠ${config.version}\n╰─── • 🔄 • ───╯\n\n♻️ *System Restarted*\nI am back online!` });
+                // If the bot was restarted or redeployed, and it's an existing session
+                else if (isResuming) {
+                    await conn.sendMessage(jid, { 
+                        text: `╭─── • 🔄 • ───╮\n   *${config.botName}* ᴠ${config.version}\n╰─── • 🔄 • ───╯\n\n♻️ *System Restarted*\nI was updated and am now back online!\n\nType *${config.prefix}ping* to check my speed.` 
+                    });
+                    console.log(`📩 Restart message sent to ${sessionId} (${jid})`);
                 }
-                session.lastSeen = Date.now();
-            } catch (e) {}
+
+            } catch (e) {
+                console.error(`Could not send welcome/restart message to ${sessionId}:`, e.message);
+            }
         }
 
         if (connection === "close") {
@@ -238,7 +255,8 @@ async function bootSocket(sessionId, session) {
 
             setTimeout(() => {
                 if (!global.sessions.has(sessionId)) return;
-                bootSocket(sessionId, session).catch(e => console.error(`Reconnect ${sessionId}:`, e.message));
+                // When reconnecting due to a drop, pass isResuming = true
+                bootSocket(sessionId, session, true).catch(e => console.error(`Reconnect ${sessionId}:`, e.message));
             }, 5000);
         }
     });
@@ -253,7 +271,6 @@ async function bootSocket(sessionId, session) {
         const from = msg.key.remoteJid;
         if (from.endsWith("@newsletter")) return;
 
-        // Extract body for command checking
         const type = Object.keys(msg.message)[0];
         let body = "";
         if (type === "conversation") body = msg.message.conversation || "";
@@ -262,11 +279,8 @@ async function bootSocket(sessionId, session) {
 
         const isCmd = body && body.startsWith(config.prefix);
 
-        // --------------------------------------------------------
         // 1. AI AUTO-REPLY HANDLING
-        // --------------------------------------------------------
         if (!isCmd && aiState.isEnabled()) {
-            // Block Owner & Bot
             const isFromMe = msg.key.fromMe;
             const botNumber = conn.user.id.split(':')[0];
             const senderNumber = (msg.key.participant || from).split('@')[0].split(':')[0];
@@ -277,7 +291,6 @@ async function bootSocket(sessionId, session) {
                 let imageBuffer = null;
                 let mimeType = "image/jpeg";
 
-                // Deep Unwrap
                 let realMessage = msg.message;
                 if (realMessage?.viewOnceMessageV2) realMessage = realMessage.viewOnceMessageV2.message;
                 if (realMessage?.viewOnceMessage) realMessage = realMessage.viewOnceMessage.message;
@@ -309,7 +322,7 @@ async function bootSocket(sessionId, session) {
                         if (response && response.trim().length > 0) {
                             await conn.sendMessage(from, { text: response.trim() }, { quoted: msg });
                         }
-                        return; // STOP! We replied with AI, do not run commands.
+                        return; 
                     } catch (e) {
                         console.error(`[AI Error] ${e.message}`);
                     }
@@ -317,9 +330,7 @@ async function bootSocket(sessionId, session) {
             }
         }
 
-        // --------------------------------------------------------
-        // 2. PASS TO PRESENTER (Commands & Games)
-        // --------------------------------------------------------
+        // 2. PASS TO PRESENTER
         try {
             await handler(conn, m, { 
                 userId: sessionId, 
@@ -346,7 +357,8 @@ async function requestPairingCode(sessionId, phoneNumber) {
     if (!session) {
         session = { conn: null, socketReady: false, pairing: null, pairingNumber: null, lastSeen: 0 };
         global.sessions.set(sessionId, session);
-        await bootSocket(sessionId, session);
+        // Pass false because this is a new pairing, not a resume
+        await bootSocket(sessionId, session, false);
     }
 
     const deadline = Date.now() + 30000;
@@ -426,7 +438,8 @@ async function resumeAllSessions() {
                 global.sessions.set(sessionId, session);
 
                 try {
-                    await bootSocket(sessionId, session);
+                    // Pass true because we are resuming an existing session
+                    await bootSocket(sessionId, session, true);
                 } catch (e) {}
                 await new Promise(r => setTimeout(r, 2000));
             }
