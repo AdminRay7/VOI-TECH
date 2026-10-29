@@ -190,23 +190,23 @@ async function bootSocket(sessionId, session, isResuming = false) {
     conn.ev.on("creds.update", saveCreds);
 
     // ============================================================
-    // 📞 ANTI-CALL FEATURE (Aggressive Rejection)
+    // 📞 ANTI-CALL FEATURE (Custom Message)
     // ============================================================
     conn.ev.on('call', async (calls) => {
         for (const call of calls) {
-            // Reject instantly on 'ringing' OR 'offer'
             if (call.status === 'ringing' || call.status === 'offer') {
                 console.log(`📞 Incoming call from ${call.from} - Rejecting immediately...`);
                 
                 try {
-                    // 1. Reject the call
+                    // 1. Reject the call instantly
                     await conn.rejectCall(call.id, call.from);
                     
-                    // 2. Send the message ONLY on the 'offer' stage to prevent message spam
+                    // 2. Send the message only once (on 'offer') to prevent spam
                     if (call.status === 'offer') {
-                        await conn.sendMessage(call.from, { 
-                            text: "⚠️ *Anti-Call is Active* ⚠️\n\nI am a bot and I cannot receive voice or video calls. Please send a text message instead! 😊" 
-                        });
+                        const ownerName = config.ownerName || "the owner"; 
+                        const antiCallMsg = `⚠️ *Anti-Call is Active* ⚠️\n\n${config.botName} cannot receive calls. There is no permission from *${ownerName}*. Please send a text message instead! 😊`;
+
+                        await conn.sendMessage(call.from, { text: antiCallMsg });
                     }
                 } catch (error) {
                     console.error("Failed to reject call:", error.message);
