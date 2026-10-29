@@ -18,7 +18,7 @@ const {
 } = require("@whiskeysockets/baileys");
 
 const config = require("./config");
-const handler = require("./presenter"); // Your handler
+const handler = require("./presenter");
 
 const app = express();
 app.use(express.json());
@@ -30,8 +30,6 @@ app.use(express.static(path.join(__dirname, "public")));
 const commandsDir = path.join(__dirname, "commands");
 if (fs.existsSync(commandsDir)) {
     handler.loadCommands(commandsDir);
-} else {
-    console.error("❌ Commands folder not found!");
 }
 
 // ============================================================
@@ -45,9 +43,7 @@ async function useMongoDBAuthState(collection, sessionId) {
                 { $set: { data: JSON.parse(JSON.stringify(data, BufferJSON.replacer)) } },
                 { upsert: true }
             );
-        } catch (error) {
-            console.error("Error writing session to DB:", error);
-        }
+        } catch (error) {}
     };
 
     const readData = async (id) => {
@@ -57,15 +53,11 @@ async function useMongoDBAuthState(collection, sessionId) {
                 return JSON.parse(JSON.stringify(doc.data), BufferJSON.reviver);
             }
             return null;
-        } catch (error) {
-            return null;
-        }
+        } catch (error) { return null; }
     };
 
     const removeData = async (id) => {
-        try {
-            await collection.deleteOne({ _id: id });
-        } catch (error) {}
+        try { await collection.deleteOne({ _id: id }); } catch (error) {}
     };
 
     const credsId = `${sessionId}:creds`;
@@ -118,7 +110,6 @@ async function initMongo() {
     if (!global.mongoClient) {
         global.mongoClient = new MongoClient(config.mongodb);
         await global.mongoClient.connect();
-        console.log("✅ MongoDB session store connected.");
     }
     return global.mongoClient;
 }
@@ -128,13 +119,17 @@ function authStateCollection() {
 }
 
 // ============================================================
-// 4. PAIRING & BOOT LOGIC
+// 4. PAIRING & BOOT LOGIC (FIXED 401 LOGOUT)
 // ============================================================
 async function bootSocket(sessionId, session) {
     await initMongo();
     const collection = authStateCollection();
     const { state: waState, saveCreds } = await useMongoDBAuthState(collection, sessionId);
     const { version } = await fetchLatestBaileysVersion();
+
+    // FIX: Only use fireInitQueries: false if this is a NEW pairing.
+    // If we are resuming, we MUST sync properly to avoid the 401 logout.
+    const isNewSession = !waState.creds.me;
 
     const conn = makeWASocket({
         version,
@@ -145,12 +140,12 @@ async function bootSocket(sessionId, session) {
         logger: pino({ level: "silent" }),
         browser: Browsers.macOS("Safari"),
         syncFullHistory: false,
-        markOnlineOnConnect: false,
+        markOnlineOnConnect: true, // Fix Heroku sleep
         generateHighQualityLinkPreview: false,
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
         keepAliveIntervalMs: 25000, 
-        fireInitQueries: false,     
+        fireInitQueries: !isNewSession, // Prevents pairing crash, allows resume sync
         emitOwnEvents: false
     });
 
@@ -187,6 +182,7 @@ async function bootSocket(sessionId, session) {
             if (code === 401 || code === DisconnectReason.loggedOut) {
                 global.sessions.delete(sessionId);
                 await collection.deleteMany({ _id: { $regex: `^${sessionId}:` } });
+                console.log(`🗑️ [${sessionId}] Session deleted from DB.`);
                 return;
             }
             if (code === 440) return;
@@ -198,18 +194,9 @@ async function bootSocket(sessionId, session) {
         }
     });
 
-    // ============================================================
-    // FIXED: MESSAGE HANDLER
-    // ============================================================
     conn.ev.on("messages.upsert", async (m) => {
-        // Pass the entire event to the handler so presenter.js can read m.messages[0]
         try {
-            await handler(conn, m, { 
-                userId: sessionId, 
-                config, 
-                helpers: {}, 
-                services: {} 
-            });
+            await handler(conn, m, { userId: sessionId, config, helpers: {}, services: {} });
         } catch (err) {
             console.error(`[${sessionId}] handler error:`, err.stack || err.message);
         }
@@ -345,6 +332,7 @@ if (config.mongodb) {
     process.exit(1);
 }
 
-process.on("unhandledRejection", (err) => {
-    console.error("unhandledRejection:", err?.stack || err?.message || err);
-});
+// Keep-Alive Ping to prevent Heroku from sleeping
+setInterval(() => {
+    console.log("💓 Keep-Alive Ping");
+}, 1000 * 60 * 20); // Every 20 minutes
