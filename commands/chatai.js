@@ -55,40 +55,55 @@ module.exports = {
             let imageBuffer = null;
             let mimeType = "image/jpeg";
 
-            // 🖼️ UNWRAP THE MESSAGE TO FIND HIDDEN IMAGES
+            // ============================================================
+            // 🖼️ DEEP UNWRAP TO FIND THE IMAGE
+            // ============================================================
             let realMessage = msg.message;
+            
+            // Unwrap all possible WhatsApp envelope types
             if (realMessage?.viewOnceMessageV2) realMessage = realMessage.viewOnceMessageV2.message;
             if (realMessage?.viewOnceMessage) realMessage = realMessage.viewOnceMessage.message;
             if (realMessage?.ephemeralMessage) realMessage = realMessage.ephemeralMessage.message;
             if (realMessage?.documentWithCaptionMessage) realMessage = realMessage.documentWithCaptionMessage.message;
 
+            // Check if it is an image
             const imageMsg = realMessage?.imageMessage;
             
             if (imageMsg) {
-                const stream = await conn.downloadMediaMessage(msg);
-                imageBuffer = stream;
-                mimeType = imageMsg.mimetype || "image/jpeg";
-                if (imageMsg.caption) {
-                    text = imageMsg.caption;
-                } else {
-                    text = "Describe this image in detail.";
+                try {
+                    // Download the image buffer
+                    const stream = await conn.downloadMediaMessage(msg);
+                    if (stream && stream.length > 0) {
+                        imageBuffer = stream;
+                        mimeType = imageMsg.mimetype || "image/jpeg";
+                        // If there is a caption, use it. Otherwise, ask AI to describe the image.
+                        text = imageMsg.caption || "Describe this image in detail.";
+                        console.log(`[AI] Image detected! Size: ${stream.length} bytes`);
+                    }
+                } catch (err) {
+                    console.error("[AI] Failed to download image:", err.message);
                 }
             }
 
+            // If neither text nor image exists, ignore
             if (!text && !imageBuffer) return false;
 
             // ============================================================
             // ⏱️ 3 SECOND DELAY WITH TYPING INDICATOR
             // ============================================================
             await conn.sendPresenceUpdate('composing', ctx.from);
-            await new Promise(resolve => setTimeout(resolve, 3000)); // 3 seconds delay
+            await new Promise(resolve => setTimeout(resolve, 3000)); // 3s delay
             await conn.sendPresenceUpdate('paused', ctx.from);
 
             let response;
             try {
                 if (imageBuffer) {
+                    // If we have an image, force the VISION model
+                    console.log("[AI] Sending image to Vision API...");
                     response = await getVisionReply(imageBuffer, mimeType, text);
                 } else {
+                    // If no image, use the TEXT model
+                    console.log("[AI] Sending text to Text API...");
                     response = await getAIReply(text);
                 }
             } catch (apiError) {
