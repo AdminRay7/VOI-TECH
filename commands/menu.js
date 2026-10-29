@@ -61,21 +61,23 @@ function buildMenuText(cmds, ctx) {
 
     const username = ctx?.pushname || 'User';
 
-    // USE FANCY HERE
     let text =
         `╭─〔 🔑 ${ctx.fancy(config.botName)} 〕\n` +
         `│\n` +
-        `│ 👤 USER   : ${ctx.fancy(username)}\n` +
-        `│ 🎯 PREFIX : ${config.prefix}\n` +
+        `│ 👤 ${ctx.fancy("user")}   : ${ctx.fancy(username)}\n` +
+        `│ 🎯 ${ctx.fancy("prefix")} : ${config.prefix}\n` +
         `│\n` +
         `╰──────────────────────\n\n`;
 
     for (const cat of catOrder) {
         const names = groups[cat].sort();
-        text += `╭─〔 📌 ${ctx.fancy(cat.toUpperCase())} 〕\n`;
+        
+        // FIXED: Removed .toUpperCase() so it stays in small letters
+        text += `╭─〔 📌 ${ctx.fancy(cat)} 〕\n`;
         text += `│\n`;
         for (const n of names) {
-            text += `│ ◇ ${config.prefix}${ctx.fancy(n)}\n`;
+            // Command names are kept lowercase (without fancy) so users can easily read them
+            text += `│ ◇ ${config.prefix}${n}\n`;
         }
         text += `│\n`;
         text += `╰──────────────────────\n\n`;
