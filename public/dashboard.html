@@ -9,8 +9,8 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg-sidebar: #0f0f15;
-      --bg-main: #14141e;
+      --bg-main: #0a0a0f;
+      --bg-panel: rgba(20, 20, 30, 0.6);
       --primary: #6366f1;
       --primary-hover: #4f46e5;
       --text-main: #e6e6f0;
@@ -23,42 +23,98 @@
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
     
     body {
-      display: flex;
-      min-height: 100vh;
       background-color: var(--bg-main);
+      background-image: 
+        radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.15) 0%, transparent 40%),
+        radial-gradient(circle at 90% 80%, rgba(168, 85, 247, 0.1) 0%, transparent 40%);
       color: var(--text-main);
-      overflow-x: hidden;
+      min-height: 100vh;
     }
 
-    /* Sidebar */
-    .sidebar {
-      width: 260px;
-      background-color: var(--bg-sidebar);
-      border-right: 1px solid var(--border);
+    /* Top Navbar */
+    .navbar {
+      display: flex;
+      align-items: center;
+      padding: 15px 20px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(10, 10, 15, 0.8);
+      backdrop-filter: blur(10px);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+
+    .menu-btn {
+      background: none;
+      border: none;
+      color: var(--text-main);
+      font-size: 24px;
+      cursor: pointer;
       display: flex;
       flex-direction: column;
-      padding: 20px 0;
-      position: fixed;
-      height: 100vh;
-      z-index: 100;
+      gap: 5px;
+      padding: 5px;
+      margin-right: 15px;
     }
-    
+
+    .menu-btn span {
+      display: block;
+      width: 24px;
+      height: 2px;
+      background-color: var(--text-main);
+      border-radius: 2px;
+      transition: 0.3s;
+    }
+
     .brand {
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 0 20px 20px;
-      font-size: 20px;
+      font-size: 18px;
       font-weight: 700;
+    }
+    .brand span { color: var(--primary); }
+
+    /* Slide-out Sidebar */
+    .sidebar {
+      position: fixed;
+      top: 0;
+      left: -280px;
+      width: 260px;
+      height: 100vh;
+      background-color: #0f0f15;
+      border-right: 1px solid var(--border);
+      transition: 0.3s ease-in-out;
+      z-index: 1000;
+      padding-top: 20px;
+      box-shadow: 10px 0 30px rgba(0,0,0,0.5);
+    }
+
+    .sidebar.open {
+      left: 0;
+    }
+
+    .sidebar-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0 20px 20px;
       border-bottom: 1px solid var(--border);
       margin-bottom: 20px;
     }
-    .brand span { color: var(--primary); }
+
+    .close-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 24px;
+      cursor: pointer;
+    }
+    .close-btn:hover { color: var(--text-main); }
 
     .nav-links {
       display: flex;
       flex-direction: column;
-      gap: 5px;
       padding: 0 10px;
     }
 
@@ -66,60 +122,65 @@
       display: flex;
       align-items: center;
       gap: 12px;
-      padding: 12px 15px;
+      padding: 14px 20px;
       text-decoration: none;
       color: var(--text-muted);
       border-radius: 8px;
-      font-size: 14px;
+      font-size: 15px;
       font-weight: 500;
       transition: 0.2s;
     }
 
-    .nav-link:hover {
+    .nav-link:hover, .nav-link.active {
       background-color: rgba(255,255,255,0.05);
       color: var(--text-main);
     }
 
-    .nav-link.active {
-      background-color: rgba(99, 102, 241, 0.1);
-      color: var(--primary);
-    }
-
+    .nav-link.active { color: var(--primary); }
     .nav-icon { font-size: 18px; }
+
+    /* Overlay */
+    .overlay {
+      position: fixed;
+      top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(3px);
+      z-index: 900;
+      opacity: 0;
+      pointer-events: none;
+      transition: 0.3s;
+    }
+    .overlay.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
 
     /* Main Content */
     .main-content {
-      margin-left: 260px;
-      flex: 1;
-      padding: 40px;
-      width: calc(100% - 260px);
+      padding: 30px 20px;
+      max-width: 1000px;
+      margin: 0 auto;
     }
 
-    .header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 40px;
-    }
-
-    .header h1 { font-size: 28px; font-weight: 600; }
-    .header p { color: var(--text-muted); font-size: 14px; margin-top: 5px; }
+    .header h1 { font-size: 24px; font-weight: 600; margin-bottom: 5px;}
+    .header p { color: var(--text-muted); font-size: 14px; margin-bottom: 30px;}
 
     /* Status Cards */
     .stats-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
       gap: 20px;
-      margin-bottom: 40px;
+      margin-bottom: 30px;
     }
 
     .stat-card {
-      background: rgba(255, 255, 255, 0.03);
+      background: var(--bg-panel);
       border: 1px solid var(--border);
       border-radius: 12px;
       padding: 20px;
       display: flex;
       flex-direction: column;
+      backdrop-filter: blur(10px);
     }
 
     .stat-title { font-size: 13px; color: var(--text-muted); margin-bottom: 10px; display: flex; align-items: center; gap: 8px;}
@@ -129,17 +190,18 @@
 
     /* Action Panel */
     .action-panel {
-      background: rgba(255, 255, 255, 0.03);
+      background: var(--bg-panel);
       border: 1px solid var(--border);
       border-radius: 12px;
       padding: 30px;
       display: flex;
-      align-items: center;
-      justify-content: space-between;
+      flex-direction: column;
+      gap: 20px;
+      backdrop-filter: blur(10px);
     }
 
     .action-text h3 { font-size: 18px; margin-bottom: 8px;}
-    .action-text p { color: var(--text-muted); font-size: 14px; max-width: 500px; line-height: 1.5;}
+    .action-text p { color: var(--text-muted); font-size: 14px; line-height: 1.5;}
 
     .btn-pair {
       background: var(--primary);
@@ -151,51 +213,59 @@
       font-size: 14px;
       transition: 0.2s;
       display: inline-block;
-      white-space: nowrap;
+      text-align: center;
+      width: 100%;
+      max-width: 250px;
     }
     .btn-pair:hover { background: var(--primary-hover); transform: translateY(-2px); }
 
-    /* Mobile */
-    @media (max-width: 768px) {
-      .sidebar { width: 100%; height: auto; position: relative; padding-bottom: 0; }
-      .main-content { margin-left: 0; width: 100%; padding: 20px; }
-      .action-panel { flex-direction: column; align-items: flex-start; gap: 20px; }
-      .btn-pair { width: 100%; text-align: center; }
-    }
   </style>
 </head>
 <body>
 
-  <!-- Sidebar -->
-  <div class="sidebar">
+  <!-- Top Navbar -->
+  <div class="navbar">
+    <button class="menu-btn" onclick="toggleMenu()">
+      <span></span>
+      <span></span>
+      <span></span>
+    </button>
     <div class="brand">
       <span>🔑</span> 303-XMD
     </div>
-    
+  </div>
+
+  <!-- Slide-out Sidebar -->
+  <div class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="brand"><span>🔑</span> Menu</div>
+      <button class="close-btn" onclick="toggleMenu()">✕</button>
+    </div>
     <div class="nav-links">
-      <a href="#" class="nav-link active">
+      <a href="/" class="nav-link active">
         <span class="nav-icon">📊</span> Dashboard
       </a>
-      <a href="index.html" class="nav-link">
+      <a href="/index.html" class="nav-link">
         <span class="nav-icon">📱</span> Pairing Panel
+      </a>
+      <a href="#" class="nav-link">
+        <span class="nav-icon">🤖</span> AI Control
       </a>
       <a href="#" class="nav-link">
         <span class="nav-icon">⚙️</span> Settings
       </a>
-      <a href="#" class="nav-link">
-        <span class="nav-icon">📖</span> Documentation
-      </a>
     </div>
   </div>
+
+  <!-- Overlay (Darkens background when menu is open) -->
+  <div class="overlay" id="overlay" onclick="toggleMenu()"></div>
 
   <!-- Main Content -->
   <div class="main-content">
     
     <div class="header">
-      <div>
-        <h1>Welcome back, Presenter</h1>
-        <p>Here is the current status of your bot.</p>
-      </div>
+      <h1>Welcome back, Presenter</h1>
+      <p>Here is the current status of your bot.</p>
     </div>
 
     <!-- Stats -->
@@ -218,14 +288,22 @@
     <div class="action-panel">
       <div class="action-text">
         <h3>Link a new WhatsApp Account</h3>
-        <p>You currently have no pending pairings. Click the button on the right to go to the pairing panel, enter your phone number, and generate a code.</p>
+        <p>Click the button below to go to the pairing panel, enter your phone number, and generate a code.</p>
       </div>
-      <a href="index.html" class="btn-pair">Go to Pairing Panel →</a>
+      <a href="/index.html" class="btn-pair">Go to Pairing Panel →</a>
     </div>
 
   </div>
 
   <script>
+    // Toggle Sidebar Menu
+    function toggleMenu() {
+      const sidebar = document.getElementById("sidebar");
+      const overlay = document.getElementById("overlay");
+      sidebar.classList.toggle("open");
+      overlay.classList.toggle("active");
+    }
+
     // Check Status from API
     async function updateStats() {
       try {
