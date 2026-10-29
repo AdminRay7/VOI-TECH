@@ -3,72 +3,124 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>303-XMD — The Last Key</title>
+  <title>303-XMD — Pairing Panel</title>
   <style>
     :root { color-scheme: dark; }
     body {
-      margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      margin: 0; font-family: system-ui, -apple-system, sans-serif;
       background: radial-gradient(1200px 600px at 20% 0%, #1a1a2e 0%, #0d0d14 60%, #05050a 100%);
       color: #e6e6f0; min-height: 100vh; display: grid; place-items: center;
     }
     .card {
       background: rgba(255,255,255,0.04);
       border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 20px; padding: 40px; width: min(560px, 90vw);
+      border-radius: 20px; padding: 40px; width: min(500px, 90vw);
       box-shadow: 0 20px 60px rgba(0,0,0,0.4); backdrop-filter: blur(8px);
     }
-    h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: 0.5px; }
-    .sub { color: #8b8ba8; margin-bottom: 24px; }
-    .row { display: flex; justify-content: space-between; padding: 10px 0; border-top: 1px dashed rgba(255,255,255,0.08); }
-    .label { color: #9a9ab5; font-size: 14px; }
-    .value { font-family: ui-monospace, Menlo, Consolas, monospace; color: #cfd0ff; }
-    .pill { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 12px; }
-    .on  { background: rgba(0,200,120,0.15); color: #4ade80; }
-    .off { background: rgba(220,60,60,0.15);  color: #f87171; }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    .sub { color: #8b8ba8; margin-bottom: 24px; font-size: 14px; }
+    input {
+      width: 100%; box-sizing: border-box; padding: 14px; border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.4);
+      color: white; font-size: 16px; margin-bottom: 16px; outline: none;
+    }
+    input:focus { border-color: #6366f1; }
+    button {
+      width: 100%; padding: 14px; border-radius: 10px; border: none;
+      background: #6366f1; color: white; font-size: 16px; font-weight: bold;
+      cursor: pointer; transition: 0.2s;
+    }
+    button:hover { background: #4f46e5; }
+    button:disabled { background: #3730a3; cursor: not-allowed; opacity: 0.7; }
+    .code-box {
+      display: none; text-align: center; margin-top: 20px;
+      padding: 20px; background: rgba(99,102,241,0.1); border-radius: 10px;
+      border: 1px dashed #6366f1;
+    }
+    .code { font-size: 32px; font-weight: bold; letter-spacing: 4px; color: #a5b4fc; margin-top: 10px; }
+    .status { margin-top: 15px; font-size: 14px; text-align: center; color: #9a9ab5; }
+    .success { color: #4ade80; }
+    .error { color: #f87171; }
   </style>
 </head>
 <body>
   <div class="card">
     <h1>🔑 303-XMD</h1>
-    <div class="sub">The Last Key — status console</div>
+    <div class="sub">Enter your WhatsApp number to generate a pairing code.</div>
 
-    <div class="row">
-      <span class="label">Connected</span>
-      <span id="conn" class="pill off">checking…</span>
+    <input type="tel" id="phone" placeholder="e.g. 254712345678" />
+    <button id="btn" onclick="pair()">Get Pairing Code</button>
+
+    <div class="code-box" id="codeBox">
+      <div style="font-size:14px; color:#9a9ab5;">Enter this on your phone:</div>
+      <div class="code" id="code"></div>
     </div>
-    <div class="row">
-      <span class="label">Version</span>
-      <span id="ver" class="value">—</span>
-    </div>
-    <div class="row">
-      <span class="label">Uptime</span>
-      <span id="up" class="value">—</span>
-    </div>
-    <div class="row">
-      <span class="label">Pairing code</span>
-      <span id="pair" class="value">—</span>
-    </div>
+
+    <div class="status" id="status"></div>
   </div>
 
   <script>
-    async function refresh() {
+    let pollInterval;
+
+    async function pair() {
+      const phone = document.getElementById("phone").value.trim();
+      const btn = document.getElementById("btn");
+      const status = document.getElementById("status");
+      const codeBox = document.getElementById("codeBox");
+      const codeEl = document.getElementById("code");
+
+      if (!phone || phone.length < 10) {
+        status.innerHTML = '<span class="error">Please enter a valid phone number.</span>';
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = "Requesting code...";
+      status.innerHTML = "Connecting to WhatsApp...";
+      codeBox.style.display = "none";
+
       try {
-        const r = await fetch("/health");
-        const j = await r.json();
-        const c = document.getElementById("conn");
-        c.textContent = j.connected ? "online" : "offline";
-        c.className = "pill " + (j.connected ? "on" : "off");
-        document.getElementById("ver").textContent = j.version || "—";
-        document.getElementById("up").textContent = Math.floor(j.uptime || 0) + "s";
-        document.getElementById("pair").textContent = j.pairing || "—";
-      } catch {
-        const c = document.getElementById("conn");
-        c.textContent = "unreachable";
-        c.className = "pill off";
+        const res = await fetch("/api/pair", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ phone })
+        });
+        const data = await res.json();
+
+        if (data.error) throw new Error(data.error);
+
+        codeEl.textContent = data.code;
+        codeBox.style.display = "block";
+        status.innerHTML = "Waiting for you to link...";
+        btn.textContent = "Code Generated";
+        
+        startPolling(phone);
+      } catch (err) {
+        status.innerHTML = `<span class="error">${err.message}</span>`;
+        btn.disabled = false;
+        btn.textContent = "Get Pairing Code";
       }
     }
-    refresh();
-    setInterval(refresh, 3000);
+
+    function startPolling(phone) {
+      if (pollInterval) clearInterval(pollInterval);
+      const status = document.getElementById("status");
+      const btn = document.getElementById("btn");
+
+      pollInterval = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/status/${phone}`);
+          const data = await res.json();
+
+          if (data.connected) {
+            clearInterval(pollInterval);
+            document.getElementById("codeBox").style.display = "none";
+            status.innerHTML = '<span class="success">✅ Device linked successfully! Bot is now running.</span>';
+            btn.textContent = "Connected";
+          }
+        } catch (e) { /* ignore network errors during poll */ }
+      }, 3000);
+    }
   </script>
 </body>
 </html>
