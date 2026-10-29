@@ -105,6 +105,7 @@ async function useMongoDBAuthState(collection, sessionId) {
 if (!global.sessions) global.sessions = new Map();
 if (!global.mongoClient) global.mongoClient = null;
 let pairingQueue = Promise.resolve();
+let isFirstBoot = true; // Tracks if this is the first time the bot is booting
 
 async function initMongo() {
     if (!global.mongoClient) {
@@ -119,7 +120,7 @@ function authStateCollection() {
 }
 
 // ============================================================
-// 4. PAIRING & BOOT LOGIC (FIXED 401 LOGOUT)
+// 4. PAIRING & BOOT LOGIC
 // ============================================================
 async function bootSocket(sessionId, session) {
     await initMongo();
@@ -127,8 +128,6 @@ async function bootSocket(sessionId, session) {
     const { state: waState, saveCreds } = await useMongoDBAuthState(collection, sessionId);
     const { version } = await fetchLatestBaileysVersion();
 
-    // FIX: Only use fireInitQueries: false if this is a NEW pairing.
-    // If we are resuming, we MUST sync properly to avoid the 401 logout.
     const isNewSession = !waState.creds.me;
 
     const conn = makeWASocket({
@@ -140,12 +139,12 @@ async function bootSocket(sessionId, session) {
         logger: pino({ level: "silent" }),
         browser: Browsers.macOS("Safari"),
         syncFullHistory: false,
-        markOnlineOnConnect: true, // Fix Heroku sleep
+        markOnlineOnConnect: true, 
         generateHighQualityLinkPreview: false,
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
         keepAliveIntervalMs: 25000, 
-        fireInitQueries: !isNewSession, // Prevents pairing crash, allows resume sync
+        fireInitQueries: !isNewSession, 
         emitOwnEvents: false
     });
 
@@ -164,7 +163,7 @@ async function bootSocket(sessionId, session) {
             session.socketReady = true;
             session.pairing = null;
             console.log(`✅ [${sessionId}] connected as ${conn.user?.id}`);
-            
+
             try {
                 await collection.updateOne(
                     { _id: `${sessionId}:meta` },
@@ -172,6 +171,37 @@ async function bootSocket(sessionId, session) {
                     { upsert: true }
                 );
             } catch {}
+
+            // ========================================================
+            // WELCOME / RESTART MESSAGE LOGIC
+            // ========================================================
+            try {
+                const jid = conn.user.id.split(':')[0] + "@s.whatsapp.net";
+                const now = Date.now();
+                const lastSeen = session.lastSeen || 0;
+                const isReconnect = (now - lastSeen) < 60000; // Reconnect if within 1 minute
+
+                if (isNewSession && isFirstBoot) {
+                    // 1. New User Pairing Welcome
+                    await conn.sendMessage(jid, { 
+                        text: `╭─── • 🔑 • ───╮\n   *${config.botName}* ᴠ${config.version}\n╰─── • 🔑 • ───╯\n\n👋 *Welcome!* Your session has been successfully linked.\n\nType *${config.prefix}menu* to see my commands.` 
+                    });
+                    console.log(`📩 Welcome message sent to ${sessionId}`);
+                } 
+                else if (!isNewSession && !isFirstBoot && !isReconnect) {
+                    // 2. Restart / Deployment Message
+                    await conn.sendMessage(jid, { 
+                        text: `╭─── • 🔄 • ───╮\n   *${config.botName}* ᴠ${config.version}\n╰─── • 🔄 • ───╯\n\n♻️ *System Restarted*\nI was updated and am now back online!\n\nType *${config.prefix}ping* to check my speed.` 
+                    });
+                    console.log(`📩 Restart message sent to ${sessionId}`);
+                }
+                
+                session.lastSeen = Date.now();
+                isNewSessionFlag = false; // Flag to ensure welcome isn't sent again on this session
+
+            } catch (e) {
+                console.error(`Could not send welcome/restart message to ${sessionId}:`, e.message);
+            }
         }
 
         if (connection === "close") {
@@ -213,7 +243,7 @@ async function requestPairingCode(sessionId, phoneNumber) {
     if (session?.pairing && session.pairingNumber === phoneNumber) return session.pairing;
 
     if (!session) {
-        session = { conn: null, socketReady: false, pairing: null, pairingNumber: null };
+        session = { conn: null, socketReady: false, pairing: null, pairingNumber: null, lastSeen: 0 };
         global.sessions.set(sessionId, session);
         await bootSocket(sessionId, session);
     }
@@ -285,6 +315,17 @@ app.get("/health", (req, res) => {
 // ============================================================
 app.listen(config.port, () => {
     console.log(`🌐 Web panel running on port ${config.port}`);
+    
+    // Self-Ping to keep Heroku awake
+    setInterval(() => {
+        const http = require('http');
+        const url = `http://localhost:${config.port}/health`;
+        http.get(url, (res) => {
+            console.log(`💓 Self-Ping: ${res.statusCode}`);
+        }).on('error', (err) => {
+            console.error('❌ Self-Ping Error:', err.message);
+        });
+    }, 1000 * 60 * 20); // 20 minutes
 });
 
 async function resumeAllSessions() {
@@ -292,14 +333,14 @@ async function resumeAllSessions() {
         await initMongo();
         const c = authStateCollection();
         const metas = await c.find({ _id: { $regex: ":meta$" } }).toArray();
-        
+
         if (metas.length > 0) {
             console.log(`🔄 Resuming ${metas.length} valid session(s)...`);
             for (const meta of metas) {
                 const sessionId = meta._id.replace(/:meta$/, "");
                 if (global.sessions.has(sessionId)) continue;
 
-                const session = { conn: null, socketReady: false, pairing: null, pairingNumber: null };
+                const session = { conn: null, socketReady: false, pairing: null, pairingNumber: null, lastSeen: 0 };
                 global.sessions.set(sessionId, session);
 
                 try {
@@ -331,8 +372,3 @@ if (config.mongodb) {
     console.error("❌ MONGODB_URI is required in .env!");
     process.exit(1);
 }
-
-// Keep-Alive Ping to prevent Heroku from sleeping
-setInterval(() => {
-    console.log("💓 Keep-Alive Ping");
-}, 1000 * 60 * 20); // Every 20 minutes
