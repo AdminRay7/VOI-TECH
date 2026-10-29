@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>303-XMD — Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-sidebar: #0f0f15;
+      --bg-main: #14141e;
+      --primary: #6366f1;
+      --primary-hover: #4f46e5;
+      --text-main: #e6e6f0;
+      --text-muted: #8b8ba8;
+      --border: rgba(255, 255, 255, 0.08);
+      --success: #4ade80;
+      --error: #f87171;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
+    
+    body {
+      display: flex;
+      min-height: 100vh;
+      background-color: var(--bg-main);
+      color: var(--text-main);
+      overflow-x: hidden;
+    }
+
+    /* Sidebar */
+    .sidebar {
+      width: 260px;
+      background-color: var(--bg-sidebar);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      padding: 20px 0;
+      position: fixed;
+      height: 100vh;
+      z-index: 100;
+    }
+    
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 20px 20px;
+      font-size: 20px;
+      font-weight: 700;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 20px;
+    }
+    .brand span { color: var(--primary); }
+
+    .nav-links {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      padding: 0 10px;
+    }
+
+    .nav-link {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 15px;
+      text-decoration: none;
+      color: var(--text-muted);
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      transition: 0.2s;
+    }
+
+    .nav-link:hover {
+      background-color: rgba(255,255,255,0.05);
+      color: var(--text-main);
+    }
+
+    .nav-link.active {
+      background-color: rgba(99, 102, 241, 0.1);
+      color: var(--primary);
+    }
+
+    .nav-icon { font-size: 18px; }
+
+    /* Main Content */
+    .main-content {
+      margin-left: 260px;
+      flex: 1;
+      padding: 40px;
+      width: calc(100% - 260px);
+    }
+
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 40px;
+    }
+
+    .header h1 { font-size: 28px; font-weight: 600; }
+    .header p { color: var(--text-muted); font-size: 14px; margin-top: 5px; }
+
+    /* Status Cards */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 20px;
+      margin-bottom: 40px;
+    }
+
+    .stat-card {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .stat-title { font-size: 13px; color: var(--text-muted); margin-bottom: 10px; display: flex; align-items: center; gap: 8px;}
+    .stat-value { font-size: 24px; font-weight: 700; }
+    .stat-value.online { color: var(--success); }
+    .stat-value.offline { color: var(--error); }
+
+    /* Action Panel */
+    .action-panel {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 30px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .action-text h3 { font-size: 18px; margin-bottom: 8px;}
+    .action-text p { color: var(--text-muted); font-size: 14px; max-width: 500px; line-height: 1.5;}
+
+    .btn-pair {
+      background: var(--primary);
+      color: white;
+      text-decoration: none;
+      padding: 14px 24px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 14px;
+      transition: 0.2s;
+      display: inline-block;
+      white-space: nowrap;
+    }
+    .btn-pair:hover { background: var(--primary-hover); transform: translateY(-2px); }
+
+    /* Mobile */
+    @media (max-width: 768px) {
+      .sidebar { width: 100%; height: auto; position: relative; padding-bottom: 0; }
+      .main-content { margin-left: 0; width: 100%; padding: 20px; }
+      .action-panel { flex-direction: column; align-items: flex-start; gap: 20px; }
+      .btn-pair { width: 100%; text-align: center; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="brand">
+      <span>🔑</span> 303-XMD
+    </div>
+    
+    <div class="nav-links">
+      <a href="#" class="nav-link active">
+        <span class="nav-icon">📊</span> Dashboard
+      </a>
+      <a href="index.html" class="nav-link">
+        <span class="nav-icon">📱</span> Pairing Panel
+      </a>
+      <a href="#" class="nav-link">
+        <span class="nav-icon">⚙️</span> Settings
+      </a>
+      <a href="#" class="nav-link">
+        <span class="nav-icon">📖</span> Documentation
+      </a>
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <div class="main-content">
+    
+    <div class="header">
+      <div>
+        <h1>Welcome back, Presenter</h1>
+        <p>Here is the current status of your bot.</p>
+      </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-title">📡 Database Status</div>
+        <div class="stat-value online" id="db-status">Checking...</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-title">🟢 Active Sessions</div>
+        <div class="stat-value" id="session-count">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-title">⏱️ System Uptime</div>
+        <div class="stat-value" id="uptime">0s</div>
+      </div>
+    </div>
+
+    <!-- Action -->
+    <div class="action-panel">
+      <div class="action-text">
+        <h3>Link a new WhatsApp Account</h3>
+        <p>You currently have no pending pairings. Click the button on the right to go to the pairing panel, enter your phone number, and generate a code.</p>
+      </div>
+      <a href="index.html" class="btn-pair">Go to Pairing Panel →</a>
+    </div>
+
+  </div>
+
+  <script>
+    // Check Status from API
+    async function updateStats() {
+      try {
+        const res = await fetch("/health");
+        const data = await res.json();
+        
+        const dbEl = document.getElementById("db-status");
+        dbEl.textContent = data.dbConnected ? "Connected" : "Offline";
+        dbEl.className = `stat-value ${data.dbConnected ? "online" : "offline"}`;
+
+        document.getElementById("session-count").textContent = data.activeSessions;
+        
+      } catch (e) {
+        const dbEl = document.getElementById("db-status");
+        dbEl.textContent = "Error";
+        dbEl.className = "stat-value offline";
+      }
+    }
+
+    // Uptime Counter
+    let seconds = 0;
+    setInterval(() => {
+      seconds++;
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      document.getElementById("uptime").textContent = `${h}h ${m}m ${s}s`;
+    }, 1000);
+
+    updateStats();
+    setInterval(updateStats, 5000);
+  </script>
+</body>
+</html>
