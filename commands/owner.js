@@ -1,34 +1,25 @@
-const fs = require("fs");
-const path = require("path");
-
 module.exports = {
-    name: "menu",
-    aliases: ["help", "commands"],
-    description: "Show bot menu",
+    name: "owner",
+    aliases: ["creator", "dev"],
+    description: "Show owner contact",
     async execute(conn, msg, args, ctx) {
         try {
             const { config } = ctx;
+            const num = String(config.ownerNumber || "").replace(/\D/g, "");
+            const jid = num ? `${num}@s.whatsapp.net` : null;
             
-            // Build the menu text safely
-            let menuText = `╭─❏ *${config.botName}*\n│ ${config.footer}\n│ v${config.version}\n╰───────────────\n\n`;
+            const text = `👑 *Owner*\n• Name: ${config.ownerName || "Unknown"}\n• Number: ${num || "—"}\n• Channel: ${config.channelLink || "—"}`;
 
-            // List commands manually to prevent file-system crashes
-            menuText += `*Available Commands:*\n`;
-            menuText += `• ${config.prefix}ping — Check bot latency\n`;
-            menuText += `• ${config.prefix}menu — Show this menu\n`;
-            menuText += `• ${config.prefix}owner — Get owner contact\n\n`;
-            
-            menuText += `_Prefix: ${config.prefix}_`;
-
-            // Send the menu
-            await conn.sendMessage(ctx.from, { text: menuText }, { quoted: msg });
-            
+            if (jid) {
+                await conn.sendMessage(ctx.from, {
+                    text,
+                    mentions: [jid]
+                }, { quoted: msg });
+            } else {
+                await conn.sendMessage(ctx.from, { text }, { quoted: msg });
+            }
         } catch (error) {
-            console.error("Menu command error:", error);
-            // If menu fails, try to send a simple fallback message
-            try {
-                await conn.sendMessage(ctx.from, { text: "❌ Failed to load menu." }, { quoted: msg });
-            } catch (e) {}
+            console.error("Owner command error:", error);
         }
     }
 };
