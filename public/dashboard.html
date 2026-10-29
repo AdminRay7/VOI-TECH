@@ -4,9 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>303-XMD — Dashboard</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Universal Sidebar CSS -->
+  <link rel="stylesheet" href="/sidebar.css">
+  
   <style>
     :root {
       --bg-main: #0a0a0f;
@@ -31,131 +32,6 @@
       min-height: 100vh;
     }
 
-    /* Top Navbar */
-    .navbar {
-      display: flex;
-      align-items: center;
-      padding: 15px 20px;
-      border-bottom: 1px solid var(--border);
-      background: rgba(10, 10, 15, 0.8);
-      backdrop-filter: blur(10px);
-      position: sticky;
-      top: 0;
-      z-index: 50;
-    }
-
-    .menu-btn {
-      background: none;
-      border: none;
-      color: var(--text-main);
-      font-size: 24px;
-      cursor: pointer;
-      display: flex;
-      flex-direction: column;
-      gap: 5px;
-      padding: 5px;
-      margin-right: 15px;
-    }
-
-    .menu-btn span {
-      display: block;
-      width: 24px;
-      height: 2px;
-      background-color: var(--text-main);
-      border-radius: 2px;
-      transition: 0.3s;
-    }
-
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-size: 18px;
-      font-weight: 700;
-    }
-    .brand span { color: var(--primary); }
-
-    /* Slide-out Sidebar */
-    .sidebar {
-      position: fixed;
-      top: 0;
-      left: -280px;
-      width: 260px;
-      height: 100vh;
-      background-color: #0f0f15;
-      border-right: 1px solid var(--border);
-      transition: 0.3s ease-in-out;
-      z-index: 1000;
-      padding-top: 20px;
-      box-shadow: 10px 0 30px rgba(0,0,0,0.5);
-    }
-
-    .sidebar.open {
-      left: 0;
-    }
-
-    .sidebar-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 0 20px 20px;
-      border-bottom: 1px solid var(--border);
-      margin-bottom: 20px;
-    }
-
-    .close-btn {
-      background: none;
-      border: none;
-      color: var(--text-muted);
-      font-size: 24px;
-      cursor: pointer;
-    }
-    .close-btn:hover { color: var(--text-main); }
-
-    .nav-links {
-      display: flex;
-      flex-direction: column;
-      padding: 0 10px;
-    }
-
-    .nav-link {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 14px 20px;
-      text-decoration: none;
-      color: var(--text-muted);
-      border-radius: 8px;
-      font-size: 15px;
-      font-weight: 500;
-      transition: 0.2s;
-    }
-
-    .nav-link:hover, .nav-link.active {
-      background-color: rgba(255,255,255,0.05);
-      color: var(--text-main);
-    }
-
-    .nav-link.active { color: var(--primary); }
-    .nav-icon { font-size: 18px; }
-
-    /* Overlay */
-    .overlay {
-      position: fixed;
-      top: 0; left: 0; width: 100%; height: 100%;
-      background: rgba(0,0,0,0.6);
-      backdrop-filter: blur(3px);
-      z-index: 900;
-      opacity: 0;
-      pointer-events: none;
-      transition: 0.3s;
-    }
-    .overlay.active {
-      opacity: 1;
-      pointer-events: auto;
-    }
-
-    /* Main Content */
     .main-content {
       padding: 30px 20px;
       max-width: 1000px;
@@ -219,46 +95,12 @@
     }
     .btn-pair:hover { background: var(--primary-hover); transform: translateY(-2px); }
 
+    @media (max-width: 768px) {
+      .btn-pair { max-width: 100%; }
+    }
   </style>
 </head>
 <body>
-
-  <!-- Top Navbar -->
-  <div class="navbar">
-    <button class="menu-btn" onclick="toggleMenu()">
-      <span></span>
-      <span></span>
-      <span></span>
-    </button>
-    <div class="brand">
-      <span>🔑</span> 303-XMD
-    </div>
-  </div>
-
-  <!-- Slide-out Sidebar -->
-  <div class="sidebar" id="sidebar">
-    <div class="sidebar-header">
-      <div class="brand"><span>🔑</span> Menu</div>
-      <button class="close-btn" onclick="toggleMenu()">✕</button>
-    </div>
-    <div class="nav-links">
-      <a href="/" class="nav-link active">
-        <span class="nav-icon">📊</span> Dashboard
-      </a>
-      <a href="/index.html" class="nav-link">
-        <span class="nav-icon">📱</span> Pairing Panel
-      </a>
-      <a href="#" class="nav-link">
-        <span class="nav-icon">🤖</span> AI Control
-      </a>
-      <a href="#" class="nav-link">
-        <span class="nav-icon">⚙️</span> Settings
-      </a>
-    </div>
-  </div>
-
-  <!-- Overlay (Darkens background when menu is open) -->
-  <div class="overlay" id="overlay" onclick="toggleMenu()"></div>
 
   <!-- Main Content -->
   <div class="main-content">
@@ -295,15 +137,11 @@
 
   </div>
 
-  <script>
-    // Toggle Sidebar Menu
-    function toggleMenu() {
-      const sidebar = document.getElementById("sidebar");
-      const overlay = document.getElementById("overlay");
-      sidebar.classList.toggle("open");
-      overlay.classList.toggle("active");
-    }
+  <!-- Universal Sidebar JS (Auto-injects the menu and overlay) -->
+  <script src="/sidebar.js"></script>
 
+  <!-- Dashboard Logic -->
+  <script>
     // Check Status from API
     async function updateStats() {
       try {
