@@ -17,7 +17,7 @@ module.exports = {
         const action = args[0].toLowerCase();
         if (action === "on") {
             isAutoReplyEnabled = true;
-            return ctx.reply("✅ AI Auto-Reply is now *ON*.");
+            return ctx.reply("✅ AI Auto-Reply is now *ON*. I will reply to all messages and images.");
         } 
         if (action === "off") {
             isAutoReplyEnabled = false;
@@ -45,22 +45,14 @@ module.exports = {
         // ============================================================
         // 🛑 BLOCK OWNER & BOT ITSELF
         // ============================================================
-        
-        // 1. Ignore your own messages (fromMe)
         if (msg.key.fromMe) return false;
-
-        // 2. Ignore messages sent by the bot itself
         const botNumber = conn.user.id.split(':')[0];
         const senderNumber = ctx.sender.split('@')[0].split(':')[0];
         if (senderNumber === botNumber) return false;
-
-        // 3. Ignore messages from the configured OWNER_NUMBER in .env
         if (config.ownerNumber) {
             const owners = String(config.ownerNumber).split(",").map(n => n.replace(/\D/g, ""));
             if (owners.includes(senderNumber)) return false;
         }
-
-        // ============================================================
 
         try {
             let text = ctx.body || "";
@@ -77,9 +69,20 @@ module.exports = {
 
             if (!text && !imageBuffer) return false;
 
-            // Show typing indicator
+            // ============================================================
+            // ⏱️ 10 SECOND DELAY WITH TYPING INDICATOR
+            // ============================================================
+            
+            // 1. Show typing
             await conn.sendPresenceUpdate('composing', ctx.from);
 
+            // 2. Wait for 10 seconds (10000 ms)
+            await new Promise(resolve => setTimeout(resolve, 10000));
+
+            // 3. Stop typing right before sending
+            await conn.sendPresenceUpdate('paused', ctx.from);
+
+            // 4. Generate the AI reply
             let response;
             try {
                 if (imageBuffer) {
@@ -88,13 +91,11 @@ module.exports = {
                     response = await getAIReply(text);
                 }
             } catch (apiError) {
-                await conn.sendPresenceUpdate('paused', ctx.from);
                 await conn.sendMessage(ctx.from, { text: "⚠️ AI Error: " + apiError.message }, { quoted: msg });
                 return true;
             }
-            
-            await conn.sendPresenceUpdate('paused', ctx.from);
 
+            // 5. Send the message
             if (response && response.trim().length > 0) {
                 await conn.sendMessage(ctx.from, { text: response.trim() }, { quoted: msg });
             }
