@@ -17,7 +17,7 @@ module.exports = {
         const action = args[0].toLowerCase();
         if (action === "on") {
             isAutoReplyEnabled = true;
-            return ctx.reply("✅ AI Auto-Reply is now *ON*. I will reply to all messages and images.");
+            return ctx.reply("✅ AI Auto-Reply is now *ON*.");
         } 
         if (action === "off") {
             isAutoReplyEnabled = false;
@@ -38,13 +38,9 @@ module.exports = {
     async handleAutoReply(conn, msg, ctx) {
         const isEnabled = config.aiChatEnabled === true || config.aiChatEnabled === "true";
         if (!isEnabled || !isAutoReplyEnabled) return false;
-
-        // Don't reply to commands
         if (ctx.isCmd) return false;
 
-        // ============================================================
-        // 🛑 BLOCK OWNER & BOT ITSELF
-        // ============================================================
+        // Block Owner & Bot
         if (msg.key.fromMe) return false;
         const botNumber = conn.user.id.split(':')[0];
         const senderNumber = ctx.sender.split('@')[0].split(':')[0];
@@ -59,12 +55,31 @@ module.exports = {
             let imageBuffer = null;
             let mimeType = "image/jpeg";
 
-            const imageMsg = msg.message?.imageMessage;
+            // ============================================================
+            // 🖼️ UNWRAP THE MESSAGE TO FIND HIDDEN IMAGES
+            // ============================================================
+            let realMessage = msg.message;
+            
+            // Unwrap view-once or ephemeral messages
+            if (realMessage?.viewOnceMessageV2) realMessage = realMessage.viewOnceMessageV2.message;
+            if (realMessage?.viewOnceMessage) realMessage = realMessage.viewOnceMessage.message;
+            if (realMessage?.ephemeralMessage) realMessage = realMessage.ephemeralMessage.message;
+            if (realMessage?.documentWithCaptionMessage) realMessage = realMessage.documentWithCaptionMessage.message;
+
+            const imageMsg = realMessage?.imageMessage;
+            
             if (imageMsg) {
+                // Download the actual image buffer
                 const stream = await conn.downloadMediaMessage(msg);
                 imageBuffer = stream;
                 mimeType = imageMsg.mimetype || "image/jpeg";
-                if (imageMsg.caption) text = imageMsg.caption;
+                
+                // If there is a caption (like "read these photo"), use it as the prompt
+                if (imageMsg.caption) {
+                    text = imageMsg.caption;
+                } else {
+                    text = "Describe this image in detail.";
+                }
             }
 
             if (!text && !imageBuffer) return false;
@@ -72,22 +87,17 @@ module.exports = {
             // ============================================================
             // ⏱️ 10 SECOND DELAY WITH TYPING INDICATOR
             // ============================================================
-            
-            // 1. Show typing
             await conn.sendPresenceUpdate('composing', ctx.from);
-
-            // 2. Wait for 10 seconds (10000 ms)
-            await new Promise(resolve => setTimeout(resolve, 10000));
-
-            // 3. Stop typing right before sending
+            await new Promise(resolve => setTimeout(resolve, 10000)); // 10s delay
             await conn.sendPresenceUpdate('paused', ctx.from);
 
-            // 4. Generate the AI reply
             let response;
             try {
                 if (imageBuffer) {
+                    // Use Vision model
                     response = await getVisionReply(imageBuffer, mimeType, text);
                 } else {
+                    // Use Text model
                     response = await getAIReply(text);
                 }
             } catch (apiError) {
@@ -95,7 +105,6 @@ module.exports = {
                 return true;
             }
 
-            // 5. Send the message
             if (response && response.trim().length > 0) {
                 await conn.sendMessage(ctx.from, { text: response.trim() }, { quoted: msg });
             }
