@@ -1,48 +1,53 @@
 const axios = require("axios");
 const config = require("../config");
 
-// Store active chats so it doesn't reply to itself or spam
-const activeChats = new Set();
+// Global toggle state (in-memory)
+let isAutoReplyEnabled = true; 
 
 module.exports = {
-    name: "chat-ai",
+    name: "chat-ai", // Matches the name in presenter.js
     category: "general",
     aliases: ["ai", "gpt"],
-    description: "Chat with AI (Auto-replies to everything including photos)",
+    description: "AI Auto-Reply (Use .ai on / .ai off to toggle)",
 
+    // This executes when someone types `.ai`
     async execute(conn, msg, args, ctx) {
         if (!args.length) {
-            return ctx.reply("Please provide a prompt. Example: `.ai what is life?`");
+            return ctx.reply(`AI Auto-Reply is currently *${isAutoReplyEnabled ? "ON" : "OFF"}*.\nUse \`.ai on\` or \`.ai off\` to change it.`);
         }
-        
+
+        const action = args[0].toLowerCase();
+        if (action === "on") {
+            isAutoReplyEnabled = true;
+            return ctx.reply("✅ AI Auto-Reply is now *ON*. I will reply to all messages and images.");
+        } 
+        if (action === "off") {
+            isAutoReplyEnabled = false;
+            return ctx.reply("❌ AI Auto-Reply is now *OFF*.");
+        }
+
+        // If they typed something else (e.g. .ai what is life?), act as a manual prompt
         const prompt = args.join(" ");
         await ctx.reply("🤖 *Thinking...*");
-        
         try {
             const response = await getAIReply(prompt);
             await ctx.reply(response);
         } catch (error) {
             console.error("AI Command Error:", error.message);
-            await ctx.reply("❌ AI failed to respond. Check Heroku logs.");
+            await ctx.reply("❌ AI failed to respond.");
         }
     },
 
-    // This handles the AUTO-REPLY logic
+    // This is triggered AUTOMATICALLY by presenter.js for every message
     async handleAutoReply(conn, msg, ctx) {
+        // Only run if .env is true AND the toggle is ON
         const isEnabled = config.aiChatEnabled === true || config.aiChatEnabled === "true";
-        if (!isEnabled) return false;
+        if (!isEnabled || !isAutoReplyEnabled) return false;
 
-        // Don't reply to commands
+        // Don't reply to commands (starts with .)
         if (ctx.isCmd) return false;
 
-        // Prevent double-replies
-        const msgId = msg.key.id;
-        if (activeChats.has(msgId)) return false;
-        activeChats.add(msgId);
-        setTimeout(() => activeChats.delete(msgId), 5000);
-
         try {
-            // Get the actual message content
             let text = ctx.body || "";
             let imageBuffer = null;
             let mimeType = "image/jpeg";
@@ -50,16 +55,12 @@ module.exports = {
             // Check if the message is an image
             const imageMsg = msg.message?.imageMessage;
             if (imageMsg) {
-                // Download the image
                 const stream = await conn.downloadMediaMessage(msg);
                 imageBuffer = stream;
                 mimeType = imageMsg.mimetype || "image/jpeg";
-                
-                // Use the caption as the text prompt, if available
                 if (imageMsg.caption) text = imageMsg.caption;
             }
 
-            // If there is no text and no image, ignore
             if (!text && !imageBuffer) return false;
 
             // Show typing indicator
@@ -67,14 +68,11 @@ module.exports = {
 
             let response;
             if (imageBuffer) {
-                // Use Vision model for images
-                response = await getVisionReply(imageBuffer, mimeType, text, ctx.pushname);
+                response = await getVisionReply(imageBuffer, mimeType, text);
             } else {
-                // Use Text model for text
-                response = await getAIReply(text, ctx.pushname);
+                response = await getAIReply(text);
             }
             
-            // Send response
             await conn.sendMessage(ctx.from, { text: response }, { quoted: msg });
             return true;
 
@@ -86,17 +84,13 @@ module.exports = {
 };
 
 // ============================================================
-// TEXT API CALL (Groq)
+// GROQ API CALLS (Uses your .env)
 // ============================================================
-async function getAIReply(prompt, username = "User") {
+async function getAIReply(prompt) {
     const apiKey = config.aiApiKey;
     const baseUrl = config.aiBaseUrl || "https://api.groq.com/openai/v1";
-    // Defaulting to a fast Groq model
-    const model = config.aiModel || "llama3-8b-8192"; 
-
-    if (!apiKey) throw new Error("AI_API_KEY is missing in .env");
-
-    const systemPrompt = `You are a normal person chatting in a WhatsApp group. Keep replies very short, casual, human. Use emojis occasionally. Never mention you are an AI or bot. Reply in the same language the group uses. Don't use markdown, headers, or bullet points. The user's name is ${username}.`;
+    const model = config.aiModel || "llama-3.2-11b-vision-preview"; 
+    const systemPrompt = config.aiSystemPrompt;
 
     const response = await axios.post(
         `${baseUrl}/chat/completions`,
@@ -118,48 +112,35 @@ async function getAIReply(prompt, username = "User") {
     return response.data.choices[0].message.content.trim();
 }
 
-// ============================================================
-// VISION API CALL (Groq)
-// ============================================================
-async function getVisionReply(imageBuffer, mimeType, prompt, username = "User") {
+async function getVisionReply(imageBuffer, mimeType, prompt) {
     const apiKey = config.aiApiKey;
     const baseUrl = config.aiBaseUrl || "https://api.groq.com/openai/v1";
-    // Groq's Vision model
-    const model = "llama-3.2-11b-vision-preview"; 
+    const model = config.aiModel || "llama-3.2-11b-vision-preview"; 
+    const systemPrompt = config.aiSystemPrompt;
 
-    if (!apiKey) throw new Error("AI_API_KEY is missing in .env");
-
-    // Convert image buffer to base64
     const base64Image = imageBuffer.toString("base64");
     const imageUrl = `data:${mimeType};base64,${base64Image}`;
-
-    const systemPrompt = `You are a normal person chatting in a WhatsApp group. Look at the image the user sent and reply naturally and casually. Keep it very short. Do not mention you are an AI.`;
-
-    // Build messages array
-    const messages = [
-        { role: "system", content: systemPrompt }
-    ];
-
-    // Add user message with image
-    messages.push({
-        role: "user",
-        content: [
-            { type: "text", text: prompt || "What is in this image?" },
-            { type: "image_url", image_url: { url: imageUrl } }
-        ]
-    });
 
     const response = await axios.post(
         `${baseUrl}/chat/completions`,
         {
             model: model,
-            messages: messages,
+            messages: [
+                { role: "system", content: systemPrompt },
+                {
+                    role: "user",
+                    content: [
+                        { type: "text", text: prompt || "What is in this image?" },
+                        { type: "image_url", image_url: { url: imageUrl } }
+                    ]
+                }
+            ],
             temperature: 0.7,
             max_tokens: 200
         },
         {
             headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-            timeout: 20000 // Vision takes a bit longer
+            timeout: 20000 
         }
     );
 
