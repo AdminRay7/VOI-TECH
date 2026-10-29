@@ -1,7 +1,7 @@
 // presenter.js — self-loading, dependency-injected, multi-user-safe command handler
 const fs   = require("fs");
 const path = require("path");
-const { fancy } = require("./lib/font"); // IMPORT FONT
+const { fancy } = require("./lib/font"); 
 
 const commandCache = new Map();
 const commandOwners = new Map();
@@ -160,7 +160,7 @@ async function handler(conn, m, options = {}) {
             isGroup, isChannel, isCmd, isOwner,
             isPrivateMode: !!privateMode,
             canUse,
-            fancy, // PASS FANCY FUNCTION
+            fancy, 
             type,
             normalized,
             reply: async (text, extra = {}) => {
@@ -183,20 +183,8 @@ async function handler(conn, m, options = {}) {
             } catch (e) { console.error("[presenter] routeGameInput fatal:", e?.message || e); }
         }
 
-        // ============================================================
-        // AI AUTO-REPLY TRIGGER (Handles Text AND Images)
-        // ============================================================
-        const isImage = !!normalized.imageMessage || 
-                        !!msg.message?.imageMessage || 
-                        !!msg.message?.viewOnceMessageV2?.message?.imageMessage || 
-                        !!msg.message?.ephemeralMessage?.message?.imageMessage;
-
-        if (!isCmd && (body || isImage)) {
-            try {
-                if (await routeAutoReply(conn, msg, ctx, commands)) return;
-            } catch (e) { console.error("[presenter] routeAutoReply fatal:", e?.message || e); }
-        }
-
+        // AI is handled directly in index.js before reaching this point.
+        // We only process commands here.
         if (!isCmd || !command) return;
 
         const mod = commands.get(command);
@@ -263,12 +251,10 @@ function normalizeNumber(input) {
 function isOwnerCheck(sender, msg, config) {
     const senderNum = normalizeNumber(sender);
     if (!senderNum) return false;
-
     if (msg.key?.fromMe) {
         const jid = String(msg.key.remoteJid || "");
         if (!jid.endsWith("@g.us")) return true;
     }
-
     if (!config?.ownerNumber) return false;
     const owners = String(config.ownerNumber).split(",").map(normalizeNumber).filter(Boolean);
     return owners.includes(senderNum);
@@ -277,7 +263,6 @@ function isOwnerCheck(sender, msg, config) {
 async function routeButtons(conn, msg, ctx, commands, services) {
     const buttonId = msg.message?.buttonsResponseMessage?.selectedButtonId || msg.message?.templateButtonReplyMessage?.selectedId || msg.message?.listResponseMessage?.singleSelectReply?.selectedRowId;
     if (!buttonId) return false;
-
     if (buttonId.startsWith("run_command:")) {
         const name = buttonId.slice("run_command:".length).trim().toLowerCase();
         const mod = commands.get(name);
@@ -289,7 +274,6 @@ async function routeButtons(conn, msg, ctx, commands, services) {
         } catch (e) { console.error(`Button-run "${name}" error:`, e?.stack || e?.message || e); }
         return true;
     }
-
     if (buttonId.startsWith("game:") && services.gameEngine?.sendInput) {
         const parts = buttonId.split(":");
         const input = parts[2];
@@ -298,7 +282,6 @@ async function routeButtons(conn, msg, ctx, commands, services) {
             if (handled) return true;
         } catch (e) { console.error("game sendInput error:", e.message); }
     }
-
     const seen = new Set();
     for (const [, mod] of commands) {
         if (seen.has(mod)) continue;
@@ -326,13 +309,6 @@ async function routeGameInput(ctx, services) {
     } catch { return false; }
     if (!isDir) return false;
     try { return (await services.gameEngine.sendInput(userId, from, sender, trimmed)) === true; } catch { return false; }
-}
-
-const AI_COMMAND_NAME = "chat-ai";
-async function routeAutoReply(conn, msg, ctx, commands) {
-    const ai = commands.get(AI_COMMAND_NAME);
-    if (!ai || typeof ai.handleAutoReply !== "function") return false;
-    try { return (await ai.handleAutoReply(conn, msg, ctx)) === true; } catch (e) { return false; }
 }
 
 module.exports = handler;
