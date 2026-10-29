@@ -195,7 +195,7 @@ async function bootSocket(sessionId, session) {
                     });
                     console.log(`📩 Restart message sent to ${sessionId}`);
                 }
-                
+
                 session.lastSeen = Date.now();
                 isNewSessionFlag = false; // Flag to ensure welcome isn't sent again on this session
 
@@ -226,7 +226,13 @@ async function bootSocket(sessionId, session) {
 
     conn.ev.on("messages.upsert", async (m) => {
         try {
-            await handler(conn, m, { userId: sessionId, config, helpers: {}, services: {} });
+            await handler(conn, m, { 
+                userId: sessionId, 
+                config, 
+                helpers: {}, 
+                services: {},
+                commandsDir: path.join(__dirname, "commands") // <--- THE ONLY ADDED LINE
+            });
         } catch (err) {
             console.error(`[${sessionId}] handler error:`, err.stack || err.message);
         }
@@ -315,7 +321,7 @@ app.get("/health", (req, res) => {
 // ============================================================
 app.listen(config.port, () => {
     console.log(`🌐 Web panel running on port ${config.port}`);
-    
+
     // Self-Ping to keep Heroku awake
     setInterval(() => {
         const http = require('http');
