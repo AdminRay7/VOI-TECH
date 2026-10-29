@@ -19,28 +19,49 @@ const {
 
 const config = require("./config");
 const handler = require("./presenter");
+const aiState = require("./lib/aiState");
+const { getAIReply, getVisionReply } = require("./lib/chatai");
 
 const app = express();
 app.use(express.json());
 
 // ============================================================
-// WEB ROUTES (Dashboard & Pairing Panel)
+// WEB ROUTES
 // ============================================================
-// 1. Serve the Dashboard as the main landing page
 app.get("/", (req, res) => {
     res.sendFile(path.join(__dirname, "public", "dashboard.html"));
 });
 
-// 2. Serve the Pairing Panel
 app.get("/index.html", (req, res) => {
     res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-// 3. Serve any other static files (images, css, etc.)
 app.use(express.static(path.join(__dirname, "public")));
 
 // ============================================================
-// 1. LOAD COMMANDS ON BOOT
+// AI WEB APIs
+// ============================================================
+app.post("/api/ai/toggle", (req, res) => {
+    const { enabled } = req.body;
+    aiState.setEnabled(enabled);
+    console.log(`🤖 AI Auto-Reply turned ${enabled ? "ON" : "OFF"} from Web Panel`);
+    res.json({ success: true, enabled });
+});
+
+app.post("/api/ai/chat", async (req, res) => {
+    const { message } = req.body;
+    if (!message) return res.status(400).json({ error: "Message required" });
+
+    try {
+        const reply = await getAIReply(message);
+        res.json({ reply });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============================================================
+// LOAD COMMANDS
 // ============================================================
 const commandsDir = path.join(__dirname, "commands");
 if (fs.existsSync(commandsDir)) {
@@ -48,7 +69,7 @@ if (fs.existsSync(commandsDir)) {
 }
 
 // ============================================================
-// 2. MONGODB AUTH STATE
+// MONGODB AUTH STATE
 // ============================================================
 async function useMongoDBAuthState(collection, sessionId) {
     const writeData = async (data, id) => {
@@ -115,12 +136,12 @@ async function useMongoDBAuthState(collection, sessionId) {
 }
 
 // ============================================================
-// 3. GLOBAL STATE & DB INIT
+// GLOBAL STATE & DB INIT
 // ============================================================
 if (!global.sessions) global.sessions = new Map();
 if (!global.mongoClient) global.mongoClient = null;
 let pairingQueue = Promise.resolve();
-let isFirstBoot = true; // Tracks if this is the first time the bot is booting
+let isFirstBoot = true;
 
 async function initMongo() {
     if (!global.mongoClient) {
@@ -135,7 +156,7 @@ function authStateCollection() {
 }
 
 // ============================================================
-// 4. PAIRING & BOOT LOGIC
+// PAIRING & BOOT LOGIC
 // ============================================================
 async function bootSocket(sessionId, session) {
     await initMongo();
@@ -187,36 +208,20 @@ async function bootSocket(sessionId, session) {
                 );
             } catch {}
 
-            // ========================================================
-            // WELCOME / RESTART MESSAGE LOGIC
-            // ========================================================
             try {
                 const jid = conn.user.id.split(':')[0] + "@s.whatsapp.net";
                 const now = Date.now();
                 const lastSeen = session.lastSeen || 0;
-                const isReconnect = (now - lastSeen) < 60000; // Reconnect if within 1 minute
+                const isReconnect = (now - lastSeen) < 60000; 
 
                 if (isNewSession && isFirstBoot) {
-                    // 1. New User Pairing Welcome
-                    await conn.sendMessage(jid, { 
-                        text: `╭─── • 🔑 • ───╮\n   *${config.botName}* ᴠ${config.version}\n╰─── • 🔑 • ───╯\n\n👋 *Welcome!* Your session has been successfully linked.\n\nType *${config.prefix}menu* to see my commands.` 
-                    });
-                    console.log(`📩 Welcome message sent to ${sessionId}`);
+                    await conn.sendMessage(jid, { text: `╭─── • 🔑 • ───╮\n   *${config.botName}* ᴠ${config.version}\n╰─── • 🔑 • ───╯\n\n👋 *Welcome!* Your session has been successfully linked.\n\nType *${config.prefix}menu* to see my commands.` });
                 } 
                 else if (!isNewSession && !isFirstBoot && !isReconnect) {
-                    // 2. Restart / Deployment Message
-                    await conn.sendMessage(jid, { 
-                        text: `╭─── • 🔄 • ───╮\n   *${config.botName}* ᴠ${config.version}\n╰─── • 🔄 • ───╯\n\n♻️ *System Restarted*\nI was updated and am now back online!\n\nType *${config.prefix}ping* to check my speed.` 
-                    });
-                    console.log(`📩 Restart message sent to ${sessionId}`);
+                    await conn.sendMessage(jid, { text: `╭─── • 🔄 • ───╮\n   *${config.botName}* ᴠ${config.version}\n╰─── • 🔄 • ───╯\n\n♻️ *System Restarted*\nI am back online!` });
                 }
-
                 session.lastSeen = Date.now();
-                isNewSessionFlag = false; // Flag to ensure welcome isn't sent again on this session
-
-            } catch (e) {
-                console.error(`Could not send welcome/restart message to ${sessionId}:`, e.message);
-            }
+            } catch (e) {}
         }
 
         if (connection === "close") {
@@ -227,7 +232,6 @@ async function bootSocket(sessionId, session) {
             if (code === 401 || code === DisconnectReason.loggedOut) {
                 global.sessions.delete(sessionId);
                 await collection.deleteMany({ _id: { $regex: `^${sessionId}:` } });
-                console.log(`🗑️ [${sessionId}] Session deleted from DB.`);
                 return;
             }
             if (code === 440) return;
@@ -239,7 +243,83 @@ async function bootSocket(sessionId, session) {
         }
     });
 
+    // ============================================================
+    // MESSAGE INTERCEPTOR (AI vs COMMANDS)
+    // ============================================================
     conn.ev.on("messages.upsert", async (m) => {
+        const msg = m.messages[0];
+        if (!msg.message) return;
+
+        const from = msg.key.remoteJid;
+        if (from.endsWith("@newsletter")) return;
+
+        // Extract body for command checking
+        const type = Object.keys(msg.message)[0];
+        let body = "";
+        if (type === "conversation") body = msg.message.conversation || "";
+        if (type === "extendedTextMessage") body = msg.message.extendedTextMessage?.text || "";
+        if (type === "imageMessage") body = msg.message.imageMessage?.caption || "";
+
+        const isCmd = body && body.startsWith(config.prefix);
+
+        // --------------------------------------------------------
+        // 1. AI AUTO-REPLY HANDLING
+        // --------------------------------------------------------
+        if (!isCmd && aiState.isEnabled()) {
+            // Block Owner & Bot
+            const isFromMe = msg.key.fromMe;
+            const botNumber = conn.user.id.split(':')[0];
+            const senderNumber = (msg.key.participant || from).split('@')[0].split(':')[0];
+            
+            if (!isFromMe && senderNumber !== botNumber && !config.ownerNumber.includes(senderNumber)) {
+                
+                let text = body;
+                let imageBuffer = null;
+                let mimeType = "image/jpeg";
+
+                // Deep Unwrap
+                let realMessage = msg.message;
+                if (realMessage?.viewOnceMessageV2) realMessage = realMessage.viewOnceMessageV2.message;
+                if (realMessage?.viewOnceMessage) realMessage = realMessage.viewOnceMessage.message;
+                if (realMessage?.ephemeralMessage) realMessage = realMessage.ephemeralMessage.message;
+                if (realMessage?.documentWithCaptionMessage) realMessage = realMessage.documentWithCaptionMessage.message;
+
+                const imageMsg = realMessage?.imageMessage;
+                if (imageMsg) {
+                    try {
+                        imageBuffer = await conn.downloadMediaMessage(msg);
+                        mimeType = imageMsg.mimetype || "image/jpeg";
+                        text = imageMsg.caption || "Describe this image in detail.";
+                    } catch (err) {}
+                }
+
+                if (text || imageBuffer) {
+                    try {
+                        await conn.sendPresenceUpdate('composing', from);
+                        await new Promise(resolve => setTimeout(resolve, 3000)); 
+                        await conn.sendPresenceUpdate('paused', from);
+
+                        let response;
+                        if (imageBuffer) {
+                            response = await getVisionReply(imageBuffer, mimeType, text);
+                        } else {
+                            response = await getAIReply(text);
+                        }
+
+                        if (response && response.trim().length > 0) {
+                            await conn.sendMessage(from, { text: response.trim() }, { quoted: msg });
+                        }
+                        return; // STOP! We replied with AI, do not run commands.
+                    } catch (e) {
+                        console.error(`[AI Error] ${e.message}`);
+                    }
+                }
+            }
+        }
+
+        // --------------------------------------------------------
+        // 2. PASS TO PRESENTER (Commands & Games)
+        // --------------------------------------------------------
         try {
             await handler(conn, m, { 
                 userId: sessionId, 
@@ -249,7 +329,7 @@ async function bootSocket(sessionId, session) {
                 commandsDir: path.join(__dirname, "commands") 
             });
         } catch (err) {
-            console.error(`[${sessionId}] handler error:`, err.stack || err.message);
+            console.error(`[${sessionId}] presenter error:`, err.message);
         }
     });
 
@@ -286,12 +366,11 @@ async function requestPairingCode(sessionId, phoneNumber) {
     const formatted = code.match(/.{1,4}/g)?.join("-") || code;
     session.pairing = formatted;
     session.pairingNumber = phoneNumber;
-    console.log(`✅ [${sessionId}] pairing code: ${formatted}`);
     return formatted;
 }
 
 // ============================================================
-// 5. WEB ENDPOINTS
+// WEB ENDPOINTS
 // ============================================================
 app.get("/api/pair", async (req, res) => {
     const sessionId = String(req.query.sessionId || "").trim();
@@ -308,19 +387,8 @@ app.get("/api/pair", async (req, res) => {
         });
         res.json({ success: true, sessionId, code });
     } catch (e) {
-        console.error("Pair error:", e.message);
         res.status(500).json({ error: e.message });
     }
-});
-
-app.get("/api/status/:phone", (req, res) => {
-    const phone = req.params.phone.replace(/\D/g, "");
-    const session = global.sessions.get(phone);
-    res.json({
-        connected: session?.socketReady || false,
-        code: session?.pairing || null,
-        dbConnected: mongoose.connection.readyState === 1
-    });
 });
 
 app.get("/health", (req, res) => {
@@ -332,21 +400,14 @@ app.get("/health", (req, res) => {
 });
 
 // ============================================================
-// 6. RESUME & BOOT
+// BOOT
 // ============================================================
 app.listen(config.port, () => {
     console.log(`🌐 Web panel running on port ${config.port}`);
-
-    // Self-Ping to keep Heroku awake
     setInterval(() => {
         const http = require('http');
-        const url = `http://localhost:${config.port}/health`;
-        http.get(url, (res) => {
-            console.log(`💓 Self-Ping: ${res.statusCode}`);
-        }).on('error', (err) => {
-            console.error('❌ Self-Ping Error:', err.message);
-        });
-    }, 1000 * 60 * 20); // 20 minutes
+        http.get(`http://localhost:${config.port}/health`, () => {}).on('error', () => {});
+    }, 1000 * 60 * 20);
 });
 
 async function resumeAllSessions() {
@@ -366,17 +427,11 @@ async function resumeAllSessions() {
 
                 try {
                     await bootSocket(sessionId, session);
-                } catch (e) {
-                    console.error(`Resume ${sessionId}:`, e.message);
-                }
+                } catch (e) {}
                 await new Promise(r => setTimeout(r, 2000));
             }
-        } else {
-            console.log(`📭 No linked sessions found. Waiting for new pairings...`);
         }
-    } catch (e) {
-        console.log("No sessions found to resume.");
-    }
+    } catch (e) {}
 }
 
 if (config.mongodb) {
@@ -385,11 +440,7 @@ if (config.mongodb) {
             console.log("✅ Mongoose Connected");
             await resumeAllSessions();
         })
-        .catch(e => {
-            console.error("❌ Mongoose Error:", e.message);
-            process.exit(1);
-        });
+        .catch(e => { process.exit(1); });
 } else {
-    console.error("❌ MONGODB_URI is required in .env!");
     process.exit(1);
 }
