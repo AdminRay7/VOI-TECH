@@ -1,5 +1,6 @@
 module.exports = {
     name: "owner",
+    category: "general",
     aliases: ["creator", "dev"],
     description: "Show owner contact",
     async execute(conn, msg, args, ctx) {
@@ -8,7 +9,8 @@ module.exports = {
             const num = String(config.ownerNumber || "").replace(/\D/g, "");
             const jid = num ? `${num}@s.whatsapp.net` : null;
             
-            const text = `👑 *Owner*\n• Name: ${config.ownerName || "Unknown"}\n• Number: ${num || "—"}\n• Channel: ${config.channelLink || "—"}`;
+            // USE FANCY HERE
+            const text = `👑 *${ctx.fancy("Owner")}*\n• Name: ${ctx.fancy(config.ownerName || "Unknown")}\n• Number: ${num || "—"}\n• Channel: ${config.channelLink || "—"}`;
 
             if (jid) {
                 await conn.sendMessage(ctx.from, {
