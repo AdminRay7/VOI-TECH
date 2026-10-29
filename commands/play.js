@@ -23,36 +23,47 @@ module.exports = {
 
             let videoUrl = "";
 
-            // 1. Search using the granted search scope
-            const searchRes = await axios.get(`${BASE_URL}/api/search/youtube`, {
-                params: { q: query },
-                headers: { 'Authorization': `Bearer ${TOOSII_API_KEY}` }
-            });
-
-            // Extract the video URL from the response
-            if (searchRes.data && searchRes.data.success && searchRes.data.data && searchRes.data.data.length > 0) {
-                videoUrl = searchRes.data.data[0].url;
-            } else if (searchRes.data && searchRes.data.result && searchRes.data.result.length > 0) {
-                videoUrl = searchRes.data.result[0].url;
+            // Check if user typed a direct YouTube link
+            const urlRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/gi;
+            const match = query.match(urlRegex);
+            
+            if (match) {
+                videoUrl = `https://www.youtube.com/watch?v=${match[1]}`;
             } else {
-                throw new Error("Toosii API could not find the song.");
+                // 1. SEARCH (Using the exact granted scope: /api/search/youtube)
+                const searchRes = await axios.get(`${BASE_URL}/api/search/youtube`, {
+                    params: { q: query, query: query }, // send both just in case
+                    headers: { 'Authorization': `Bearer ${TOOSII_API_KEY}` }
+                });
+
+                // Extract video URL from the search result
+                const searchData = searchRes.data;
+                if (searchData && searchData.success && searchData.data && searchData.data.length > 0) {
+                    videoUrl = searchData.data[0].url || searchData.data[0].link || searchData.data[0].videoUrl;
+                } else if (searchData && searchData.result && searchData.result.length > 0) {
+                    videoUrl = searchData.result[0].url || searchData.result[0].link || searchData.result[0].videoUrl;
+                } else {
+                    throw new Error("Toosii API could not find the song.");
+                }
             }
 
             await ctx.reply(`⬇️ *Downloading audio...*`);
 
-            // 2. Download using the granted audio scope
+            // 2. DOWNLOAD (Using the exact granted scope: /api/download/audio)
             const downloadRes = await axios.get(`${BASE_URL}/api/download/audio`, {
-                params: { url: videoUrl },
+                params: { url: videoUrl, query: query },
                 headers: { 'Authorization': `Bearer ${TOOSII_API_KEY}` }
             });
 
-            // Extract the audio link from the download response
-            const audioUrl = downloadRes.data?.url || 
-                             downloadRes.data?.link || 
-                             downloadRes.data?.download_url || 
-                             downloadRes.data?.data?.url;
+            // Extract download link
+            const downloadData = downloadRes.data;
+            const audioUrl = downloadData?.url || 
+                             downloadData?.link || 
+                             downloadData?.download_url || 
+                             downloadData?.data?.url ||
+                             downloadData?.result?.url;
 
-            const title = downloadRes.data?.title || "Audio";
+            const title = downloadData?.title || downloadData?.data?.title || downloadData?.result?.title || "Audio";
 
             if (!audioUrl) {
                 throw new Error("Toosii API did not return an audio link.");
@@ -70,7 +81,6 @@ module.exports = {
         } catch (error) {
             await conn.sendMessage(ctx.from, { react: { text: "❌", key: msg.key } });
             
-            // Show the exact API error if it fails
             if (error.response && error.response.data) {
                 const apiError = typeof error.response.data === 'string' 
                     ? error.response.data 
