@@ -1,161 +1,256 @@
 require("dotenv").config();
 
+const express = require("express");
+const path = require("path");
+const mongoose = require("mongoose");
+const pino = require("pino");
+const { MongoClient } = require("mongodb");
 const {
     default: makeWASocket,
     DisconnectReason,
     Browsers,
     makeCacheableSignalKeyStore,
-    fetchLatestBaileysVersion
+    fetchLatestBaileysVersion,
+    initAuthCreds,
+    BufferJSON,
+    proto
 } = require("@whiskeysockets/baileys");
-const pino = require("pino");
-const express = require("express");
-const path = require("path");
-const mongoose = require("mongoose");
+
 const config = require("./config");
 const handler = require("./presenter");
-const services = require("./lib/services");
-const { useMongoAuthState } = require("./lib/mongoAuthState");
 
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-const activeSockets = new Map();
-const pairingCodes = new Map(); 
+// ============================================================
+// 1. MONGODB AUTH STATE (Built-in)
+// ============================================================
+async function useMongoDBAuthState(collection, sessionId) {
+    const writeData = async (data, id) => {
+        try {
+            await collection.updateOne(
+                { _id: id },
+                { $set: { data: JSON.parse(JSON.stringify(data, BufferJSON.replacer)) } },
+                { upsert: true }
+            );
+        } catch (error) {
+            console.error("Error writing session to DB:", error);
+        }
+    };
 
-if (config.mongodb) {
-    mongoose.connect(config.mongodb)
-        .then(() => {
-            console.log("✅ MongoDB Connected");
-            resumeSessions(); 
-        })
-        .catch(e => {
-            console.error("❌ MongoDB Error:", e.message);
-            process.exit(1);
-        });
-} else {
-    console.error("❌ MONGODB_URI is required in .env!");
-    process.exit(1);
+    const readData = async (id) => {
+        try {
+            const doc = await collection.findOne({ _id: id });
+            if (doc && doc.data) {
+                return JSON.parse(JSON.stringify(doc.data), BufferJSON.reviver);
+            }
+            return null;
+        } catch (error) {
+            return null;
+        }
+    };
+
+    const removeData = async (id) => {
+        try {
+            await collection.deleteOne({ _id: id });
+        } catch (error) {}
+    };
+
+    const credsId = `${sessionId}:creds`;
+    const creds = (await readData(credsId)) || initAuthCreds();
+
+    return {
+        state: {
+            creds,
+            keys: {
+                get: async (type, ids) => {
+                    const data = {};
+                    await Promise.all(
+                        ids.map(async (id) => {
+                            let value = await readData(`${sessionId}:${type}-${id}`);
+                            if (type === "app-state-sync-key" && value) {
+                                value = proto.Message.AppStateSyncKeyData.fromObject(value);
+                            }
+                            data[id] = value;
+                        })
+                    );
+                    return data;
+                },
+                set: async (data) => {
+                    const tasks = [];
+                    for (const category in data) {
+                        for (const id in data[category]) {
+                            const value = data[category][id];
+                            const key = `${sessionId}:${category}-${id}`;
+                            tasks.push(value ? writeData(value, key) : removeData(key));
+                        }
+                    }
+                    await Promise.all(tasks);
+                }
+            }
+        },
+        saveCreds: async () => {
+            await writeData(creds, credsId);
+        }
+    };
 }
 
-async function connectUser(phoneNumber, isPairing = false) {
-    const sessionId = phoneNumber.replace(/\D/g, "");
-    
-    if (isPairing && activeSockets.has(sessionId)) {
-        try { activeSockets.get(sessionId).end(); } catch(e) {}
-        activeSockets.delete(sessionId);
-    } else if (!isPairing && activeSockets.has(sessionId)) {
-        return activeSockets.get(sessionId);
-    }
+// ============================================================
+// 2. GLOBAL STATE & DB INIT
+// ============================================================
+if (!global.sessions) global.sessions = new Map();
+if (!global.mongoClient) global.mongoClient = null;
+let pairingQueue = Promise.resolve();
 
-    const { state, saveCreds } = await useMongoAuthState(sessionId);
+async function initMongo() {
+    if (!global.mongoClient) {
+        global.mongoClient = new MongoClient(config.mongodb);
+        await global.mongoClient.connect();
+        console.log("✅ MongoDB session store connected.");
+    }
+    return global.mongoClient;
+}
+
+function authStateCollection() {
+    return global.mongoClient.db("xmd303").collection("authState");
+}
+
+// ============================================================
+// 3. PAIRING & BOOT LOGIC
+// ============================================================
+async function bootSocket(sessionId, session) {
+    await initMongo();
+    const collection = authStateCollection();
+    const { state: waState, saveCreds } = await useMongoDBAuthState(collection, sessionId);
     const { version } = await fetchLatestBaileysVersion();
 
-    const sock = makeWASocket({
+    const conn = makeWASocket({
         version,
         auth: {
-            creds: state.creds,
-            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" }))
+            creds: waState.creds,
+            keys: makeCacheableSignalKeyStore(waState.keys, pino({ level: "silent" }))
         },
         logger: pino({ level: "silent" }),
-        browser: Browsers.ubuntu("Chrome"), 
+        browser: Browsers.macOS("Safari"),
         syncFullHistory: false,
         markOnlineOnConnect: false,
+        generateHighQualityLinkPreview: false,
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
-        keepAliveIntervalMs: 25000,
-        retryRequestDelayMs: 2000
+        keepAliveIntervalMs: 25000, // Heroku WebSocket ping fix
+        fireInitQueries: false,     // FIX: Prevents the null public key crash
+        emitOwnEvents: false
     });
 
-    activeSockets.set(sessionId, sock);
-    sock.ev.on("creds.update", saveCreds);
+    session.conn = conn;
+    conn.ev.on("creds.update", saveCreds);
 
-    if (isPairing) {
-        return new Promise((resolve, reject) => {
-            let codeRequested = false;
-            const timeout = setTimeout(() => {
-                sock.ev.off("connection.update", handler);
-                try { sock.end(); } catch(e) {}
-                activeSockets.delete(sessionId);
-                reject(new Error("Timeout: WhatsApp did not respond."));
-            }, 40000);
-
-            const handler = async (update) => {
-                const { connection, qr, lastDisconnect } = update;
-
-                if ((qr || connection === "connecting") && !codeRequested) {
-                    codeRequested = true;
-                    try {
-                        await new Promise(r => setTimeout(r, 1000)); 
-                        const rawCode = await sock.requestPairingCode(sessionId);
-                        const formatted = rawCode.match(/.{1,4}/g)?.join("-") || rawCode;
-                        
-                        clearTimeout(timeout);
-                        sock.ev.off("connection.update", handler);
-                        resolve({ sock, formatted });
-                    } catch (e) {
-                        clearTimeout(timeout);
-                        sock.ev.off("connection.update", handler);
-                        activeSockets.delete(sessionId);
-                        reject(e);
-                    }
-                }
-
-                if (connection === "close") {
-                    const code = lastDisconnect?.error?.output?.statusCode;
-                    if (!codeRequested) {
-                        clearTimeout(timeout);
-                        sock.ev.off("connection.update", handler);
-                        activeSockets.delete(sessionId);
-                        reject(new Error(`WhatsApp closed connection (Code: ${code || 'Unknown'})`));
-                    }
-                }
-            };
-
-            sock.ev.on("connection.update", handler);
-        });
-    }
-
-    sock.ev.on("connection.update", async (update) => {
+    conn.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect } = update;
+
+        if (connection === "connecting") {
+            session.socketReady = true;
+            console.log(`🔌 [${sessionId}] socket ready`);
+        }
+
         if (connection === "open") {
-            console.log(`✅ User connected: ${sessionId}`);
-            pairingCodes.delete(sessionId); 
+            session.socketReady = true;
+            session.pairing = null;
+            console.log(`✅ [${sessionId}] connected as ${conn.user?.id}`);
+            
+            try {
+                await collection.updateOne(
+                    { _id: `${sessionId}:meta` },
+                    { $set: { value: { jid: conn.user?.id, linkedAt: Date.now() } } },
+                    { upsert: true }
+                );
+            } catch {}
         }
+
         if (connection === "close") {
+            session.socketReady = false;
             const code = lastDisconnect?.error?.output?.statusCode;
-            console.log(`❌ User ${sessionId} closed, code: ${code}`);
-            activeSockets.delete(sessionId);
-            if (code === 428 || code === 515) {
-                setTimeout(() => connectUser(sessionId, false), 2000);
-            } 
+            console.log(`❌ [${sessionId}] closed (${code})`);
+
+            if (code === 401 || code === DisconnectReason.loggedOut) {
+                global.sessions.delete(sessionId);
+                await collection.deleteMany({ _id: { $regex: `^${sessionId}:` } });
+                return;
+            }
+            if (code === 440) return;
+
+            setTimeout(() => {
+                if (!global.sessions.has(sessionId)) return;
+                bootSocket(sessionId, session).catch(e => console.error(`Reconnect ${sessionId}:`, e.message));
+            }, 5000);
         }
     });
 
-    sock.ev.on("messages.upsert", async (evt) => {
-        if (!evt?.messages?.length) return;
+    conn.ev.on("messages.upsert", async (m) => {
+        const msg = m.messages[0];
+        if (!msg.message) return;
         try {
-            await handler(sock, evt, { userId: sessionId, config, helpers: {}, services });
-        } catch (e) {
-            console.error("Handler Error:", e);
+            await handler(conn, m, { userId: sessionId, config, helpers: {}, services: {} });
+        } catch (err) {
+            console.error(`[${sessionId}] handler error:`, err.message);
         }
     });
 
-    return sock;
+    return conn;
 }
 
-app.post("/api/pair", async (req, res) => {
-    let { phone } = req.body;
-    if (!phone) return res.status(400).json({ error: "Phone number required" });
+async function requestPairingCode(sessionId, phoneNumber) {
+    await initMongo();
+    let session = global.sessions.get(sessionId);
 
-    phone = phone.replace(/\D/g, "");
-    if (phone.length < 10) return res.status(400).json({ error: "Invalid phone number" });
+    if (session?.conn?.user) throw new Error("This session is already paired.");
+    if (session?.pairing && session.pairingNumber === phoneNumber) return session.pairing;
+
+    if (!session) {
+        session = { conn: null, socketReady: false, pairing: null, pairingNumber: null };
+        global.sessions.set(sessionId, session);
+        await bootSocket(sessionId, session);
+    }
+
+    const deadline = Date.now() + 30000;
+    while (!session.socketReady && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 500));
+    }
+    if (!session.socketReady) throw new Error("Socket busy. Try again.");
+
+    let code;
+    try {
+        code = await session.conn.requestPairingCode(phoneNumber);
+    } catch (e) {
+        await new Promise(r => setTimeout(r, 2000));
+        code = await session.conn.requestPairingCode(phoneNumber);
+    }
+
+    const formatted = code.match(/.{1,4}/g)?.join("-") || code;
+    session.pairing = formatted;
+    session.pairingNumber = phoneNumber;
+    console.log(`✅ [${sessionId}] pairing code: ${formatted}`);
+    return formatted;
+}
+
+// ============================================================
+// 4. WEB ENDPOINTS
+// ============================================================
+app.get("/api/pair", async (req, res) => {
+    const sessionId = String(req.query.sessionId || "").trim();
+    const num = String(req.query.num || "").replace(/[^0-9]/g, "");
+
+    if (!sessionId) return res.status(400).json({ error: "Provide ?sessionId=..." });
+    if (!num || num.length < 10 || num.length > 15) {
+        return res.status(400).json({ error: "Invalid phone number" });
+    }
 
     try {
-        const { sock, formatted } = await connectUser(phone, true);
-        pairingCodes.set(phone, formatted);
-        console.log(`🔑 Generated code for ${phone}: ${formatted}`);
-        res.json({ code: formatted });
+        const code = await new Promise((resolve, reject) => {
+            pairingQueue = pairingQueue.then(() => requestPairingCode(sessionId, num)).then(resolve).catch(reject);
+        });
+        res.json({ success: true, sessionId, code });
     } catch (e) {
         console.error("Pair error:", e.message);
         res.status(500).json({ error: e.message });
@@ -164,48 +259,50 @@ app.post("/api/pair", async (req, res) => {
 
 app.get("/api/status/:phone", (req, res) => {
     const phone = req.params.phone.replace(/\D/g, "");
-    const sock = activeSockets.get(phone);
+    const session = global.sessions.get(phone);
     res.json({
-        connected: !!sock && sock.ws?.readyState === 1,
-        code: pairingCodes.get(phone) || null,
+        connected: session?.socketReady || false,
+        code: session?.pairing || null,
         dbConnected: mongoose.connection.readyState === 1
     });
 });
 
+app.get("/health", (req, res) => {
+    res.json({
+        ok: true,
+        activeSessions: global.sessions.size,
+        dbConnected: mongoose.connection.readyState === 1
+    });
+});
+
+// ============================================================
+// 5. RESUME & BOOT
+// ============================================================
 app.listen(config.port, () => {
     console.log(`🌐 Web panel running on port ${config.port}`);
 });
 
-// ============================================================
-// SMART RESUME SESSIONS (ONLY RESUMES LINKED ACCOUNTS)
-// ============================================================
-async function resumeSessions() {
+async function resumeAllSessions() {
     try {
-        const existing = await mongoose.connection.collection("mongosessions").find().toArray();
+        await initMongo();
+        const c = authStateCollection();
+        const metas = await c.find({ _id: { $regex: ":meta$" } }).toArray();
         
-        // Filter: Only resume if WhatsApp actually linked the device (creds.me.id exists)
-        const validSessions = existing.filter(doc => 
-            doc.creds && 
-            doc.creds.me && 
-            doc.creds.me.id
-        );
+        if (metas.length > 0) {
+            console.log(`🔄 Resuming ${metas.length} valid session(s)...`);
+            for (const meta of metas) {
+                const sessionId = meta._id.replace(/:meta$/, "");
+                if (global.sessions.has(sessionId)) continue;
 
-        // Clean up unlinked (dead) sessions
-        const deadSessions = existing.filter(doc => 
-            !doc.creds || !doc.creds.me || !doc.creds.me.id
-        );
+                const session = { conn: null, socketReady: false, pairing: null, pairingNumber: null };
+                global.sessions.set(sessionId, session);
 
-        if (deadSessions.length > 0) {
-            for (const doc of deadSessions) {
-                await mongoose.connection.collection("mongosessions").deleteOne({ _id: doc._id });
-                console.log(`🗑️ Deleted unlinked/dead session: ${doc._id}`);
-            }
-        }
-
-        if (validSessions.length > 0) {
-            console.log(`🔄 Resuming ${validSessions.length} linked session(s)...`);
-            for (const doc of validSessions) {
-                connectUser(doc._id, false).catch(e => console.error(`Failed to resume ${doc._id}:`, e.message));
+                try {
+                    await bootSocket(sessionId, session);
+                } catch (e) {
+                    console.error(`Resume ${sessionId}:`, e.message);
+                }
+                await new Promise(r => setTimeout(r, 2000));
             }
         } else {
             console.log(`📭 No linked sessions found. Waiting for new pairings...`);
@@ -214,3 +311,23 @@ async function resumeSessions() {
         console.log("No sessions found to resume.");
     }
 }
+
+// Start Mongoose (for config) AND MongoDB native (for sessions)
+if (config.mongodb) {
+    mongoose.connect(config.mongodb)
+        .then(async () => {
+            console.log("✅ Mongoose Connected");
+            await resumeAllSessions();
+        })
+        .catch(e => {
+            console.error("❌ Mongoose Error:", e.message);
+            process.exit(1);
+        });
+} else {
+    console.error("❌ MONGODB_URI is required in .env!");
+    process.exit(1);
+}
+
+process.on("unhandledRejection", (err) => {
+    console.error("unhandledRejection:", err?.stack || err?.message || err);
+});
