@@ -2,6 +2,7 @@ const axios = require("axios");
 
 // HARDCODED TOOSII API KEY
 const TOOSII_API_KEY = "TSK_109_d0945231743c61dfd9036a32b70e558378e82424c049a927";
+const BASE_URL = "https://toosiitechdevelopertools.zone.id";
 
 module.exports = {
     name: "play",
@@ -21,80 +22,62 @@ module.exports = {
             await ctx.reply(`🔎 *Searching for:* ${query}...`);
 
             let videoUrl = "";
-            let title = query;
 
-            // Check if user provided a URL or a search term
-            const urlRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/gi;
-            const match = query.match(urlRegex);
-            
-            if (match) {
-                videoUrl = `https://www.youtube.com/watch?v=${match[1]}`;
+            // 1. Search using the granted search scope
+            const searchRes = await axios.get(`${BASE_URL}/api/search/youtube`, {
+                params: { q: query },
+                headers: { 'Authorization': `Bearer ${TOOSII_API_KEY}` }
+            });
+
+            // Extract the video URL from the response
+            if (searchRes.data && searchRes.data.success && searchRes.data.data && searchRes.data.data.length > 0) {
+                videoUrl = searchRes.data.data[0].url;
+            } else if (searchRes.data && searchRes.data.result && searchRes.data.result.length > 0) {
+                videoUrl = searchRes.data.result[0].url;
             } else {
-                // Use a reliable search to get the video ID
-                const searchRes = await axios.get(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`);
-                const searchMatch = searchRes.data.match(/"videoId":"([^"]+)"/);
-                if (searchMatch && searchMatch[1]) {
-                    videoUrl = `https://www.youtube.com/watch?v=${searchMatch[1]}`;
-                } else {
-                    throw new Error("Could not find that song on YouTube.");
-                }
+                throw new Error("Toosii API could not find the song.");
             }
 
             await ctx.reply(`⬇️ *Downloading audio...*`);
 
-            let audioUrl = null;
+            // 2. Download using the granted audio scope
+            const downloadRes = await axios.get(`${BASE_URL}/api/download/audio`, {
+                params: { url: videoUrl },
+                headers: { 'Authorization': `Bearer ${TOOSII_API_KEY}` }
+            });
 
-            // --- ATTEMPT 1: TOOSII API ---
-            try {
-                const toosiiRes = await axios.get(`https://toosiitechdevelopertools.zone.id/api/v1/ytmp3`, {
-                    params: { url: videoUrl },
-                    headers: {
-                        'Authorization': `Bearer ${TOOSII_API_KEY}`,
-                        'x-api-key': TOOSII_API_KEY
-                    },
-                    timeout: 15000 // 15 seconds timeout
-                });
+            // Extract the audio link from the download response
+            const audioUrl = downloadRes.data?.url || 
+                             downloadRes.data?.link || 
+                             downloadRes.data?.download_url || 
+                             downloadRes.data?.data?.url;
 
-                // Try to extract the download link from common API response structures
-                if (toosiiRes.data) {
-                    audioUrl = toosiiRes.data.url || 
-                               toosiiRes.data.link || 
-                               toosiiRes.data.download_url || 
-                               toosiiRes.data.result?.url || 
-                               toosiiRes.data.data?.url;
-                               
-                    if (toosiiRes.data.title) title = toosiiRes.data.title;
-                }
-            } catch (toosiiError) {
-                console.log("Toosii API failed, falling back...", toosiiError.message);
-            }
+            const title = downloadRes.data?.title || "Audio";
 
-            // --- ATTEMPT 2: FALLBACK API (If Toosii fails) ---
             if (!audioUrl) {
-                console.log("Using fallback API...");
-                const fallbackRes = await axios.get(`https://api.zenkey.my.id/download/ytmp3?url=${encodeURIComponent(videoUrl)}`);
-                
-                if (fallbackRes.data && fallbackRes.data.status) {
-                    audioUrl = fallbackRes.data.result.link;
-                    if (fallbackRes.data.result.title) title = fallbackRes.data.result.title;
-                } else {
-                    throw new Error("Both Toosii API and Fallback API failed to return a link.");
-                }
+                throw new Error("Toosii API did not return an audio link.");
             }
 
-            // --- SEND THE AUDIO ---
-            if (audioUrl) {
-                await conn.sendMessage(ctx.from, {
-                    audio: { url: audioUrl },
-                    mimetype: 'audio/mp4',
-                    fileName: `${title}.mp3`
-                }, { quoted: msg });
+            // 3. Send to WhatsApp
+            await conn.sendMessage(ctx.from, {
+                audio: { url: audioUrl },
+                mimetype: 'audio/mp4',
+                fileName: `${title}.mp3`
+            }, { quoted: msg });
 
-                await conn.sendMessage(ctx.from, { react: { text: "✅", key: msg.key } });
-            }
+            await conn.sendMessage(ctx.from, { react: { text: "✅", key: msg.key } });
 
         } catch (error) {
             await conn.sendMessage(ctx.from, { react: { text: "❌", key: msg.key } });
+            
+            // Show the exact API error if it fails
+            if (error.response && error.response.data) {
+                const apiError = typeof error.response.data === 'string' 
+                    ? error.response.data 
+                    : JSON.stringify(error.response.data, null, 2);
+                return ctx.reply(`⚠️ *Toosii API Error:*\n\`\`\`${apiError.substring(0, 800)}\`\`\``);
+            }
+            
             await ctx.reply(`⚠️ *Error:*\n\`\`\`${error.message}\`\`\``);
         }
     }
