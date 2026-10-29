@@ -55,12 +55,8 @@ module.exports = {
             let imageBuffer = null;
             let mimeType = "image/jpeg";
 
-            // ============================================================
             // 🖼️ UNWRAP THE MESSAGE TO FIND HIDDEN IMAGES
-            // ============================================================
             let realMessage = msg.message;
-            
-            // Unwrap view-once or ephemeral messages
             if (realMessage?.viewOnceMessageV2) realMessage = realMessage.viewOnceMessageV2.message;
             if (realMessage?.viewOnceMessage) realMessage = realMessage.viewOnceMessage.message;
             if (realMessage?.ephemeralMessage) realMessage = realMessage.ephemeralMessage.message;
@@ -69,12 +65,9 @@ module.exports = {
             const imageMsg = realMessage?.imageMessage;
             
             if (imageMsg) {
-                // Download the actual image buffer
                 const stream = await conn.downloadMediaMessage(msg);
                 imageBuffer = stream;
                 mimeType = imageMsg.mimetype || "image/jpeg";
-                
-                // If there is a caption (like "read these photo"), use it as the prompt
                 if (imageMsg.caption) {
                     text = imageMsg.caption;
                 } else {
@@ -85,19 +78,17 @@ module.exports = {
             if (!text && !imageBuffer) return false;
 
             // ============================================================
-            // ⏱️ 10 SECOND DELAY WITH TYPING INDICATOR
+            // ⏱️ 3 SECOND DELAY WITH TYPING INDICATOR
             // ============================================================
             await conn.sendPresenceUpdate('composing', ctx.from);
-            await new Promise(resolve => setTimeout(resolve, 10000)); // 10s delay
+            await new Promise(resolve => setTimeout(resolve, 3000)); // 3 seconds delay
             await conn.sendPresenceUpdate('paused', ctx.from);
 
             let response;
             try {
                 if (imageBuffer) {
-                    // Use Vision model
                     response = await getVisionReply(imageBuffer, mimeType, text);
                 } else {
-                    // Use Text model
                     response = await getAIReply(text);
                 }
             } catch (apiError) {
