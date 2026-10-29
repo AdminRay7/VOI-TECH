@@ -2,13 +2,9 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../config');
 
-// Resolve /Assets folder at project root
 const ASSETS_DIR = path.join(__dirname, '..', 'Assets');
 const COMMANDS_DIR = path.join(__dirname, '..', 'commands');
 
-// ============================================================
-//   FIND MENU IMAGE
-// ============================================================
 function findMenuImage() {
     if (!fs.existsSync(ASSETS_DIR)) return null;
     const files = fs.readdirSync(ASSETS_DIR);
@@ -16,14 +12,6 @@ function findMenuImage() {
     return img ? path.join(ASSETS_DIR, img) : null;
 }
 
-// ============================================================
-//   SCAN COMMANDS FOLDER
-//   Reads every .js recursively. Picks up:
-//   - module.name
-//   - module.category (defaults to "general")
-//   - module.description (optional)
-//   - module.aliases (optional, not shown in menu)
-// ============================================================
 function scanCommands() {
     if (!fs.existsSync(COMMANDS_DIR)) return [];
     const seen = new Set();
@@ -58,11 +46,6 @@ function scanCommands() {
     return list;
 }
 
-// ============================================================
-//   BUILD MENU TEXT
-//   Groups by category. Shows only the primary command name.
-//   No aliases in the menu — clean look.
-// ============================================================
 function buildMenuText(cmds, ctx) {
     const groups = {};
     for (const c of cmds) {
@@ -70,7 +53,6 @@ function buildMenuText(cmds, ctx) {
         groups[c.category].push(c.name);
     }
 
-    // Sort: "general" first, then alphabetical
     const catOrder = Object.keys(groups).sort((a, b) => {
         if (a === 'general') return -1;
         if (b === 'general') return 1;
@@ -79,33 +61,30 @@ function buildMenuText(cmds, ctx) {
 
     const username = ctx?.pushname || 'User';
 
+    // USE FANCY HERE
     let text =
-        `╭─〔 🔑 ${config.botName} 〕\n` +
+        `╭─〔 🔑 ${ctx.fancy(config.botName)} 〕\n` +
         `│\n` +
-        `│ 👤 USER   : ${username}\n` +
+        `│ 👤 USER   : ${ctx.fancy(username)}\n` +
         `│ 🎯 PREFIX : ${config.prefix}\n` +
         `│\n` +
         `╰──────────────────────\n\n`;
 
     for (const cat of catOrder) {
         const names = groups[cat].sort();
-        text += `╭─〔 📌 ${cat.toUpperCase()} 〕\n`;
+        text += `╭─〔 📌 ${ctx.fancy(cat.toUpperCase())} 〕\n`;
         text += `│\n`;
         for (const n of names) {
-            text += `│ ◇ ${config.prefix}${n}\n`;
+            text += `│ ◇ ${config.prefix}${ctx.fancy(n)}\n`;
         }
         text += `│\n`;
         text += `╰──────────────────────\n\n`;
     }
 
-    // Fallback for the removed fancy() function
-    text += `_${config.footer}_`;
+    text += `_${ctx.fancy(config.footer)}_`;
     return text;
 }
 
-// ============================================================
-//   EXPORT
-// ============================================================
 module.exports = {
     name: 'menu',
     category: 'general',
