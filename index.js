@@ -166,7 +166,6 @@ async function bootSocket(sessionId, session, isResuming = false) {
     const { state: waState, saveCreds } = await useMongoDBAuthState(collection, sessionId);
     const { version } = await fetchLatestBaileysVersion();
 
-    // If the credentials have a 'me' object, it means this is an existing linked account
     const isNewSession = !waState.creds.me;
 
     const conn = makeWASocket({
@@ -190,6 +189,32 @@ async function bootSocket(sessionId, session, isResuming = false) {
     session.conn = conn;
     conn.ev.on("creds.update", saveCreds);
 
+    // ============================================================
+    // 📞 ANTI-CALL FEATURE
+    // ============================================================
+    conn.ev.on('call', async (calls) => {
+        for (const call of calls) {
+            if (call.status === 'offer') {
+                console.log(`📞 Incoming call from ${call.from} - Rejecting...`);
+                
+                try {
+                    // 1. Reject the call immediately
+                    await conn.rejectCall(call.id, call.from);
+                    
+                    // 2. Send a message to the caller explaining why
+                    await conn.sendMessage(call.from, { 
+                        text: "⚠️ *Anti-Call is Active* ⚠️\n\nI am a bot and I cannot receive voice or video calls. Please send a text message instead! 😊" 
+                    });
+                } catch (error) {
+                    console.error("Failed to reject call:", error.message);
+                }
+            }
+        }
+    });
+
+    // ============================================================
+    // CONNECTION UPDATE
+    // ============================================================
     conn.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect } = update;
 
@@ -211,29 +236,23 @@ async function bootSocket(sessionId, session, isResuming = false) {
                 );
             } catch {}
 
-            // ============================================================
-            // FIXED WELCOME & RESTART MESSAGE LOGIC
-            // ============================================================
+            // WELCOME & RESTART MESSAGE LOGIC
             try {
-                // conn.user.id might look like "254712345678:8@s.whatsapp.net"
-                // We split by ":" to remove the device ID, then split by "@" to get the clean number.
                 const rawId = conn.user?.id || "";
                 const cleanNumber = rawId.split(':')[0].split('@')[0];
                 const jid = `${cleanNumber}@s.whatsapp.net`;
 
-                // If it's a new pairing (user just entered the code)
                 if (isNewSession && !isResuming) {
                     await conn.sendMessage(jid, { 
                         text: `╭─── • 🔑 • ───╮\n   *${config.botName}* ᴠ${config.version}\n╰─── • 🔑 • ───╯\n\n👋 *Welcome!* Your session has been successfully linked.\n\nType *${config.prefix}menu* to see my commands.` 
                     });
-                    console.log(`📩 Welcome message sent to ${sessionId} (${jid})`);
+                    console.log(`📩 Welcome message sent to ${sessionId}`);
                 } 
-                // If the bot was restarted or redeployed, and it's an existing session
                 else if (isResuming) {
                     await conn.sendMessage(jid, { 
-                        text: `╭─── • 🔄 • ───╮\n   *${config.botName}* ᴠ${config.version}\n╰─── • 🔄 • ───╯\n\n♻️ *System Restarted*\nI was updated and am now back online!\n\nType *${config.prefix}ping* to check my speed.` 
+                        text: `╭─── • 🔄 • ───╮\n   *${config.botName}* ᴠ${config.version}\n╰─── • 🔄 • ───╯\n\n♻️ *System Restarted*\nI was updated and am now back online!` 
                     });
-                    console.log(`📩 Restart message sent to ${sessionId} (${jid})`);
+                    console.log(`📩 Restart message sent to ${sessionId}`);
                 }
 
             } catch (e) {
@@ -255,7 +274,6 @@ async function bootSocket(sessionId, session, isResuming = false) {
 
             setTimeout(() => {
                 if (!global.sessions.has(sessionId)) return;
-                // When reconnecting due to a drop, pass isResuming = true
                 bootSocket(sessionId, session, true).catch(e => console.error(`Reconnect ${sessionId}:`, e.message));
             }, 5000);
         }
@@ -357,7 +375,6 @@ async function requestPairingCode(sessionId, phoneNumber) {
     if (!session) {
         session = { conn: null, socketReady: false, pairing: null, pairingNumber: null, lastSeen: 0 };
         global.sessions.set(sessionId, session);
-        // Pass false because this is a new pairing, not a resume
         await bootSocket(sessionId, session, false);
     }
 
@@ -438,7 +455,6 @@ async function resumeAllSessions() {
                 global.sessions.set(sessionId, session);
 
                 try {
-                    // Pass true because we are resuming an existing session
                     await bootSocket(sessionId, session, true);
                 } catch (e) {}
                 await new Promise(r => setTimeout(r, 2000));
