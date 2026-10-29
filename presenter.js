@@ -5,8 +5,8 @@ const path = require("path");
 // ============================================================
 // COMMAND REGISTRY
 // ============================================================
-const commandCache = new Map();      // name -> module
-const commandOwners = new Map();     // name -> filePath
+const commandCache = new Map();
+const commandOwners = new Map();
 let cacheLoaded = false;
 let commandDir = null;
 
@@ -105,7 +105,7 @@ async function handler(conn, m, options = {}) {
         if (!msg.message) return;
         if (!msg.key || !msg.key.remoteJid) return;
 
-        // ---- 2. Dedupe (fail-open with log, but side-effect commands respect it) ----
+        // ---- 2. Dedupe ----
         let dup = false;
         if (services.dedupe?.isDuplicate) {
             try {
