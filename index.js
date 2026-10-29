@@ -22,6 +22,21 @@ const handler = require("./presenter");
 
 const app = express();
 app.use(express.json());
+
+// ============================================================
+// WEB ROUTES (Dashboard & Pairing Panel)
+// ============================================================
+// 1. Serve the Dashboard as the main landing page
+app.get("/", (req, res) => {
+    res.sendFile(path.join(__dirname, "public", "dashboard.html"));
+});
+
+// 2. Serve the Pairing Panel
+app.get("/index.html", (req, res) => {
+    res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+// 3. Serve any other static files (images, css, etc.)
 app.use(express.static(path.join(__dirname, "public")));
 
 // ============================================================
@@ -231,7 +246,7 @@ async function bootSocket(sessionId, session) {
                 config, 
                 helpers: {}, 
                 services: {},
-                commandsDir: path.join(__dirname, "commands") // <--- THE ONLY ADDED LINE
+                commandsDir: path.join(__dirname, "commands") 
             });
         } catch (err) {
             console.error(`[${sessionId}] handler error:`, err.stack || err.message);
