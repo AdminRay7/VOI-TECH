@@ -4,20 +4,31 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>303-XMD — Pairing Panel</title>
+  
+  <!-- Sidebar CSS -->
+  <link rel="stylesheet" href="/sidebar.css">
+  
   <style>
     :root { color-scheme: dark; }
+    
+    /* We removed the padding-top from body here because sidebar.css handles it */
     body {
       margin: 0; font-family: system-ui, -apple-system, sans-serif;
       background: radial-gradient(1200px 600px at 20% 0%, #1a1a2e 0%, #0d0d14 60%, #05050a 100%);
       color: #e6e6f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; box-sizing: border-box;
     }
     
-    .container { display: flex; gap: 20px; width: 100%; max-width: 900px; flex-wrap: wrap; justify-content: center; }
+    .container {
+      display: flex; gap: 20px; width: 100%; max-width: 900px; flex-wrap: wrap; justify-content: center;
+    }
+
     .card {
-      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
       border-radius: 20px; padding: 30px; width: 100%; max-width: 400px;
       box-shadow: 0 20px 60px rgba(0,0,0,0.4); backdrop-filter: blur(8px); box-sizing: border-box;
     }
+    
     .terminal-card { max-width: 450px; display: flex; flex-direction: column; }
 
     h1 { margin: 0 0 8px; font-size: 26px; }
@@ -43,18 +54,18 @@
       padding: 20px; background: rgba(99,102,241,0.1); border-radius: 10px;
       border: 1px dashed #6366f1;
     }
-    .code { font-size: 32px; font-weight: bold; letter-spacing: 4px; color: #a5b4fc; margin-top: 10px; margin-bottom: 15px; }
+    .code { font-size: 32px; font-weight: bold; letter-spacing: 4px; color: #a5b4fc; margin-top: 10px; }
     
     .copy-btn {
-      background: rgba(99,102,241,0.2); color: #a5b4fc; border: 1px solid #6366f1;
-      padding: 8px 16px; border-radius: 6px; font-size: 14px; cursor: pointer; width: auto;
+      margin-top: 15px; background: #1f2937; padding: 8px 16px; font-size: 14px; border-radius: 6px; width: auto; display: inline-block;
     }
-    .copy-btn:hover { background: rgba(99,102,241,0.4); }
+    .copy-btn:hover { background: #374151; }
 
     .status { margin-top: 15px; font-size: 14px; text-align: center; color: #9a9ab5; }
     .success { color: #4ade80; }
     .error { color: #f87171; }
 
+    /* Terminal UI */
     .term-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-size: 13px; color: #8b8ba8;}
     .badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
     .badge.on { background: rgba(74,222,128,0.2); color: #4ade80; }
@@ -103,20 +114,19 @@
     </div>
   </div>
 
+  <!-- Sidebar JS -->
+  <script src="/sidebar.js"></script>
+
+  <!-- Page Logic -->
   <script>
-    let pollInterval;
     let sysInterval;
 
     function copyCode() {
-      const codeText = document.getElementById("code").innerText;
-      if (!codeText) return;
-      
-      navigator.clipboard.writeText(codeText).then(() => {
+      const code = document.getElementById("code").innerText;
+      navigator.clipboard.writeText(code).then(() => {
         const btn = document.querySelector(".copy-btn");
         btn.innerText = "✅ Copied!";
-        setTimeout(() => { btn.innerText = "📋 Copy Code"; }, 2000);
-      }).catch(err => {
-        alert("Failed to copy. Please select and copy manually.");
+        setTimeout(() => btn.innerText = "📋 Copy Code", 2000);
       });
     }
 
@@ -145,32 +155,14 @@
 
         codeEl.textContent = data.code;
         codeBox.style.display = "block";
-        status.innerHTML = ""; // No "Waiting..." text
+        status.innerHTML = "Waiting for you to link...";
         btn.textContent = "Code Generated";
         
-        startPolling(phone);
       } catch (err) {
         status.innerHTML = `<span class="error">${err.message}</span>`;
         btn.disabled = false;
         btn.textContent = "Get Pairing Code";
       }
-    }
-
-    function startPolling(phone) {
-      if (pollInterval) clearInterval(pollInterval);
-      
-      pollInterval = setInterval(async () => {
-        try {
-          const res = await fetch(`/api/status/${phone}`);
-          const data = await res.json();
-
-          // If connected, we don't show "Connected" text. 
-          // We just keep the code on the screen as requested.
-          if (data.connected) {
-            clearInterval(pollInterval);
-          }
-        } catch (e) {}
-      }, 3000);
     }
 
     async function checkStatus() {
