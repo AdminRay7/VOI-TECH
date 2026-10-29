@@ -24,7 +24,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
 // ============================================================
-// 1. MONGODB AUTH STATE (Built-in)
+// 1. MONGODB AUTH STATE
 // ============================================================
 async function useMongoDBAuthState(collection, sessionId) {
     const writeData = async (data, id) => {
@@ -117,7 +117,7 @@ function authStateCollection() {
 }
 
 // ============================================================
-// 3. PAIRING & BOOT LOGIC
+// 3. PAIRING & BOOT LOGIC (With 401 Fix)
 // ============================================================
 async function bootSocket(sessionId, session) {
     await initMongo();
@@ -138,8 +138,8 @@ async function bootSocket(sessionId, session) {
         generateHighQualityLinkPreview: false,
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
-        keepAliveIntervalMs: 25000, // Heroku WebSocket ping fix
-        fireInitQueries: false,     // FIX: Prevents the null public key crash
+        keepAliveIntervalMs: 25000, 
+        fireInitQueries: false,     
         emitOwnEvents: false
     });
 
@@ -173,15 +173,22 @@ async function bootSocket(sessionId, session) {
             const code = lastDisconnect?.error?.output?.statusCode;
             console.log(`❌ [${sessionId}] closed (${code})`);
 
+            // FIXED 401 LOGIC: Only delete if explicitly logged out
             if (code === 401 || code === DisconnectReason.loggedOut) {
+                console.log(`🚪 [${sessionId}] Logged out. Deleting session.`);
+                try { conn.ev.removeAllListeners(); conn.ws.close(); } catch {}
                 global.sessions.delete(sessionId);
                 await collection.deleteMany({ _id: { $regex: `^${sessionId}:` } });
                 return;
             }
-            if (code === 440) return;
+            
+            // Replaced by another session (Do nothing)
+            if (code === 440) return; 
 
+            // Reconnect for network issues (428, 503, etc)
             setTimeout(() => {
                 if (!global.sessions.has(sessionId)) return;
+                console.log(`🔄 [${sessionId}] Reconnecting...`);
                 bootSocket(sessionId, session).catch(e => console.error(`Reconnect ${sessionId}:`, e.message));
             }, 5000);
         }
@@ -223,6 +230,7 @@ async function requestPairingCode(sessionId, phoneNumber) {
     try {
         code = await session.conn.requestPairingCode(phoneNumber);
     } catch (e) {
+        // Wait 2s and try once more if it fails
         await new Promise(r => setTimeout(r, 2000));
         code = await session.conn.requestPairingCode(phoneNumber);
     }
@@ -312,7 +320,6 @@ async function resumeAllSessions() {
     }
 }
 
-// Start Mongoose (for config) AND MongoDB native (for sessions)
 if (config.mongodb) {
     mongoose.connect(config.mongodb)
         .then(async () => {
