@@ -39,10 +39,10 @@ module.exports = {
     adminEmail:  str(process.env.ADMIN_EMAIL,  ""),
     adminEmails: list(process.env.ADMIN_EMAIL, []).map(e => e.toLowerCase()),
 
-    // ---- AI Chat (Groq Vision) ----
+    // ---- AI Chat (Groq) ----
     aiChatEnabled:  bool(process.env.AI_CHAT_ENABLED, true),
     aiChatGroups:   bool(process.env.AI_CHAT_GROUPS, true),
-    aiModel:        str(process.env.AI_MODEL, "llama-3.2-11b-vision-preview"),
+    aiModel:        str(process.env.AI_MODEL, "openai/gpt-oss-20b"),
     aiBaseUrl:      str(process.env.AI_BASE_URL, "https://api.groq.com/openai/v1"),
     aiApiKey:       str(process.env.AI_API_KEY, ""),
     aiSystemPrompt: str(process.env.AI_SYSTEM_PROMPT,
