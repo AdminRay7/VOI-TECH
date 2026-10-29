@@ -7,18 +7,22 @@ function bool(v, d) {
     if (["false", "0", "no", "off"].includes(s)) return false;
     return d;
 }
+
 function num(v, d) {
     const n = Number(v);
     return Number.isFinite(n) ? n : d;
 }
+
 function str(v, d) {
     if (v === undefined || v === null || v === "") return d;
     return String(v);
 }
+
 function list(v, d = []) {
     if (!v) return d;
     return String(v).split(",").map(s => s.trim()).filter(Boolean);
 }
+
 function required(name, value) {
     if (value === undefined || value === null || value === "") {
         console.warn(`⚠️ Missing required env: ${name}`);
@@ -35,10 +39,10 @@ module.exports = {
     adminEmail:  str(process.env.ADMIN_EMAIL,  ""),
     adminEmails: list(process.env.ADMIN_EMAIL, []).map(e => e.toLowerCase()),
 
-    aiChatEnabled:  bool(process.env.AI_CHAT_ENABLED, false),
+    // ---- AI Chat (Groq Vision) ----
+    aiChatEnabled:  bool(process.env.AI_CHAT_ENABLED, true),
     aiChatGroups:   bool(process.env.AI_CHAT_GROUPS, true),
-    aiProvider:     str(process.env.AI_PROVIDER, "openai"),
-    aiModel:        str(process.env.AI_MODEL, "openai/gpt-oss-20b"),
+    aiModel:        str(process.env.AI_MODEL, "llama-3.2-11b-vision-preview"),
     aiBaseUrl:      str(process.env.AI_BASE_URL, "https://api.groq.com/openai/v1"),
     aiApiKey:       str(process.env.AI_API_KEY, ""),
     aiSystemPrompt: str(process.env.AI_SYSTEM_PROMPT,
@@ -103,7 +107,7 @@ module.exports = {
 
     autoblock: list(process.env.AUTOBLOCK, []),
 
-    // ---- External API keys (read but not used here yet) ----
+    // ---- External API keys ----
     rapidApiKey:   str(process.env.RAPIDAPI_KEY,   ""),
     rapidApiHost:  str(process.env.RAPIDAPI_HOST,  ""),
     searchApiHost: str(process.env.SEARCH_API_HOST,""),
