@@ -1,7 +1,7 @@
 // presenter.js — self-loading, dependency-injected, multi-user-safe command handler
 const fs   = require("fs");
 const path = require("path");
-const { fancy } = require("./lib/font"); // <-- IMPORT FONT
+const { fancy } = require("./lib/font"); // IMPORT FONT
 
 const commandCache = new Map();
 const commandOwners = new Map();
@@ -160,7 +160,7 @@ async function handler(conn, m, options = {}) {
             isGroup, isChannel, isCmd, isOwner,
             isPrivateMode: !!privateMode,
             canUse,
-            fancy, // <-- PASS FANCY FUNCTION HERE
+            fancy, // PASS FANCY FUNCTION
             type,
             normalized,
             reply: async (text, extra = {}) => {
@@ -183,7 +183,15 @@ async function handler(conn, m, options = {}) {
             } catch (e) { console.error("[presenter] routeGameInput fatal:", e?.message || e); }
         }
 
-        if (!isCmd && body) {
+        // ============================================================
+        // AI AUTO-REPLY TRIGGER (Handles Text AND Images)
+        // ============================================================
+        const isImage = !!normalized.imageMessage || 
+                        !!msg.message?.imageMessage || 
+                        !!msg.message?.viewOnceMessageV2?.message?.imageMessage || 
+                        !!msg.message?.ephemeralMessage?.message?.imageMessage;
+
+        if (!isCmd && (body || isImage)) {
             try {
                 if (await routeAutoReply(conn, msg, ctx, commands)) return;
             } catch (e) { console.error("[presenter] routeAutoReply fatal:", e?.message || e); }
