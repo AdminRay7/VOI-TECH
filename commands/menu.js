@@ -6,39 +6,29 @@ module.exports = {
     aliases: ["help", "commands"],
     description: "Show bot menu",
     async execute(conn, msg, args, ctx) {
-        const { config } = ctx;
-        const cmdDir = path.join(__dirname, "..");
-        const files = [];
-        const walk = (d) => {
-            for (const f of fs.readdirSync(d, { withFileTypes: true })) {
-                if (f.name.startsWith(".")) continue;
-                const full = path.join(d, f.name);
-                if (f.isDirectory()) walk(full);
-                else if (f.name.endsWith(".js")) files.push(full);
-            }
-        };
-        try { walk(cmdDir); } catch {}
+        try {
+            const { config } = ctx;
+            
+            // Build the menu text safely
+            let menuText = `╭─❏ *${config.botName}*\n│ ${config.footer}\n│ v${config.version}\n╰───────────────\n\n`;
 
-        const seen = new Set();
-        const lines = [];
-        for (const f of files) {
+            // List commands manually to prevent file-system crashes
+            menuText += `*Available Commands:*\n`;
+            menuText += `• ${config.prefix}ping — Check bot latency\n`;
+            menuText += `• ${config.prefix}menu — Show this menu\n`;
+            menuText += `• ${config.prefix}owner — Get owner contact\n\n`;
+            
+            menuText += `_Prefix: ${config.prefix}_`;
+
+            // Send the menu
+            await conn.sendMessage(ctx.from, { text: menuText }, { quoted: msg });
+            
+        } catch (error) {
+            console.error("Menu command error:", error);
+            // If menu fails, try to send a simple fallback message
             try {
-                const mod = require(f);
-                if (!mod?.name || seen.has(mod.name)) continue;
-                seen.add(mod.name);
-                lines.push(`• ${config.prefix}${mod.name}${mod.aliases?.length ? ` (${mod.aliases.map(a => config.prefix + a).join(", ")})` : ""} — ${mod.description || ""}`);
-            } catch {}
+                await conn.sendMessage(ctx.from, { text: "❌ Failed to load menu." }, { quoted: msg });
+            } catch (e) {}
         }
-
-        const text =
-`╭─❏ *${config.botName}*
-│ ${config.footer}
-│ v${config.version}
-╰───────────────
-${lines.join("\n")}
-
-_Prefix: ${config.prefix}_`;
-
-        await conn.sendMessage(ctx.from, { text }, { quoted: msg });
     }
 };
