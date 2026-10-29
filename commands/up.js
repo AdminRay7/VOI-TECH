@@ -1,5 +1,6 @@
 module.exports = {
     name: "up",
+    category: "general",
     aliases: ["uptime", "runtime"],
     description: "Check how long the bot has been running",
     async execute(conn, msg, args, ctx) {
@@ -18,7 +19,8 @@ module.exports = {
             if (minutes > 0) timeString += `${minutes}m `;
             timeString += `${seconds}s`;
 
-            const text = `╭─── • ⏱️ • ───╮\n   *${ctx.config.botName} Uptime*\n╰─── • ⏱️ • ───╯\n\nI have been running for:\n*${timeString.trim()}*`;
+            // USE FANCY HERE
+            const text = `╭─── • ⏱️ • ───╮\n   *${ctx.fancy(ctx.config.botName)} UPTIME*\n╰─── • ⏱️ • ───╯\n\nI have been running for:\n*${timeString.trim()}*`;
 
             await conn.sendMessage(ctx.from, { text }, { quoted: msg });
 
