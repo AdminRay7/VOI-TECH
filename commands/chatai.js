@@ -1,5 +1,5 @@
 const config = require("../config");
-const { getAIReply, getVisionReply } = require("../lib/chatai"); // Import the engine
+const { getAIReply, getVisionReply } = require("../lib/chatai"); 
 
 let isAutoReplyEnabled = true; 
 
@@ -17,7 +17,7 @@ module.exports = {
         const action = args[0].toLowerCase();
         if (action === "on") {
             isAutoReplyEnabled = true;
-            return ctx.reply("✅ AI Auto-Reply is now *ON*. I will reply to all messages and images.");
+            return ctx.reply("✅ AI Auto-Reply is now *ON*.");
         } 
         if (action === "off") {
             isAutoReplyEnabled = false;
@@ -38,7 +38,29 @@ module.exports = {
     async handleAutoReply(conn, msg, ctx) {
         const isEnabled = config.aiChatEnabled === true || config.aiChatEnabled === "true";
         if (!isEnabled || !isAutoReplyEnabled) return false;
+
+        // Don't reply to commands
         if (ctx.isCmd) return false;
+
+        // ============================================================
+        // 🛑 BLOCK OWNER & BOT ITSELF
+        // ============================================================
+        
+        // 1. Ignore your own messages (fromMe)
+        if (msg.key.fromMe) return false;
+
+        // 2. Ignore messages sent by the bot itself
+        const botNumber = conn.user.id.split(':')[0];
+        const senderNumber = ctx.sender.split('@')[0].split(':')[0];
+        if (senderNumber === botNumber) return false;
+
+        // 3. Ignore messages from the configured OWNER_NUMBER in .env
+        if (config.ownerNumber) {
+            const owners = String(config.ownerNumber).split(",").map(n => n.replace(/\D/g, ""));
+            if (owners.includes(senderNumber)) return false;
+        }
+
+        // ============================================================
 
         try {
             let text = ctx.body || "";
@@ -55,6 +77,7 @@ module.exports = {
 
             if (!text && !imageBuffer) return false;
 
+            // Show typing indicator
             await conn.sendPresenceUpdate('composing', ctx.from);
 
             let response;
@@ -77,6 +100,7 @@ module.exports = {
             }
             
             return true;
+
         } catch (error) {
             console.error("AI Auto-Reply Fatal Error:", error.message);
             try { await conn.sendPresenceUpdate('paused', ctx.from); } catch(e){}
