@@ -1,11 +1,13 @@
 const axios = require("axios");
-const config = require("../config");
+
+// HARDCODED TOOSII API KEY
+const TOOSII_API_KEY = "TSK_109_d0945231743c61dfd9036a32b70e558378e82424c049a927";
 
 module.exports = {
     name: "play",
     category: "media",
     aliases: ["song", "audio", "ytmp3"],
-    description: "Download audio from YouTube using Toosii API",
+    description: "Download audio from YouTube",
 
     async execute(conn, msg, args, ctx) {
         if (!args.length) {
@@ -13,60 +15,87 @@ module.exports = {
         }
 
         const query = args.join(" ");
-        const apiKey = config.toosiiApiKey;
-
-        if (!apiKey) {
-            return ctx.reply("❌ TOOSII_API_KEY is missing in .env");
-        }
-
+        
         try {
             await conn.sendMessage(ctx.from, { react: { text: "⏳", key: msg.key } });
             await ctx.reply(`🔎 *Searching for:* ${query}...`);
 
-            // 1. Search for the song on Toosii API
-            const searchRes = await axios.get(`https://api.toosii.tech/search/yt?q=${encodeURIComponent(query)}&apikey=${apiKey}`);
+            let videoUrl = "";
+            let title = query;
+
+            // Check if user provided a URL or a search term
+            const urlRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/gi;
+            const match = query.match(urlRegex);
             
-            if (!searchRes.data || !searchRes.data.status || !searchRes.data.result || searchRes.data.result.length === 0) {
-                await conn.sendMessage(ctx.from, { react: { text: "❌", key: msg.key } });
-                return ctx.reply(`⚠️ *Toosii API Response:*\n\`\`\`${JSON.stringify(searchRes.data, null, 2)}\`\`\``);
+            if (match) {
+                videoUrl = `https://www.youtube.com/watch?v=${match[1]}`;
+            } else {
+                // Use a reliable search to get the video ID
+                const searchRes = await axios.get(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`);
+                const searchMatch = searchRes.data.match(/"videoId":"([^"]+)"/);
+                if (searchMatch && searchMatch[1]) {
+                    videoUrl = `https://www.youtube.com/watch?v=${searchMatch[1]}`;
+                } else {
+                    throw new Error("Could not find that song on YouTube.");
+                }
             }
 
-            const video = searchRes.data.result[0];
-            const videoUrl = video.url;
-            const title = video.title;
+            await ctx.reply(`⬇️ *Downloading audio...*`);
 
-            await ctx.reply(`🎵 *Found:* ${title}\n⏳ Downloading audio, please wait...`);
+            let audioUrl = null;
 
-            // 2. Download the audio using Toosii API
-            const downloadRes = await axios.get(`https://api.toosii.tech/download/ytmp3?url=${encodeURIComponent(videoUrl)}&apikey=${apiKey}`);
+            // --- ATTEMPT 1: TOOSII API ---
+            try {
+                const toosiiRes = await axios.get(`https://toosiitechdevelopertools.zone.id/api/v1/ytmp3`, {
+                    params: { url: videoUrl },
+                    headers: {
+                        'Authorization': `Bearer ${TOOSII_API_KEY}`,
+                        'x-api-key': TOOSII_API_KEY
+                    },
+                    timeout: 15000 // 15 seconds timeout
+                });
 
-            if (!downloadRes.data || !downloadRes.data.status || !downloadRes.data.result || !downloadRes.data.result.download_url) {
-                await conn.sendMessage(ctx.from, { react: { text: "❌", key: msg.key } });
-                return ctx.reply(`⚠️ *Toosii API Error:*\n\`\`\`${JSON.stringify(downloadRes.data, null, 2)}\`\`\``);
+                // Try to extract the download link from common API response structures
+                if (toosiiRes.data) {
+                    audioUrl = toosiiRes.data.url || 
+                               toosiiRes.data.link || 
+                               toosiiRes.data.download_url || 
+                               toosiiRes.data.result?.url || 
+                               toosiiRes.data.data?.url;
+                               
+                    if (toosiiRes.data.title) title = toosiiRes.data.title;
+                }
+            } catch (toosiiError) {
+                console.log("Toosii API failed, falling back...", toosiiError.message);
             }
 
-            const audioUrl = downloadRes.data.result.download_url;
+            // --- ATTEMPT 2: FALLBACK API (If Toosii fails) ---
+            if (!audioUrl) {
+                console.log("Using fallback API...");
+                const fallbackRes = await axios.get(`https://api.zenkey.my.id/download/ytmp3?url=${encodeURIComponent(videoUrl)}`);
+                
+                if (fallbackRes.data && fallbackRes.data.status) {
+                    audioUrl = fallbackRes.data.result.link;
+                    if (fallbackRes.data.result.title) title = fallbackRes.data.result.title;
+                } else {
+                    throw new Error("Both Toosii API and Fallback API failed to return a link.");
+                }
+            }
 
-            // 3. Send the audio to WhatsApp
-            await conn.sendMessage(ctx.from, {
-                audio: { url: audioUrl },
-                mimetype: 'audio/mp4',
-                fileName: `${title}.mp3`
-            }, { quoted: msg });
+            // --- SEND THE AUDIO ---
+            if (audioUrl) {
+                await conn.sendMessage(ctx.from, {
+                    audio: { url: audioUrl },
+                    mimetype: 'audio/mp4',
+                    fileName: `${title}.mp3`
+                }, { quoted: msg });
 
-            await conn.sendMessage(ctx.from, { react: { text: "✅", key: msg.key } });
+                await conn.sendMessage(ctx.from, { react: { text: "✅", key: msg.key } });
+            }
 
         } catch (error) {
             await conn.sendMessage(ctx.from, { react: { text: "❌", key: msg.key } });
-            
-            if (error.response && error.response.data) {
-                const apiError = typeof error.response.data === 'string' 
-                    ? error.response.data 
-                    : JSON.stringify(error.response.data, null, 2);
-                return ctx.reply(`⚠️ *Toosii API Error:*\n\`\`\`${apiError.substring(0, 500)}\`\`\``);
-            }
-            
-            return ctx.reply(`⚠️ *System Error:*\n\`\`\`${error.message}\`\`\``);
+            await ctx.reply(`⚠️ *Error:*\n\`\`\`${error.message}\`\`\``);
         }
     }
 };
