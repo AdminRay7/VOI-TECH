@@ -9,22 +9,32 @@
     body {
       margin: 0; font-family: system-ui, -apple-system, sans-serif;
       background: radial-gradient(1200px 600px at 20% 0%, #1a1a2e 0%, #0d0d14 60%, #05050a 100%);
-      color: #e6e6f0; min-height: 100vh; display: grid; place-items: center;
+      color: #e6e6f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; box-sizing: border-box;
     }
+    
+    .container {
+      display: flex; gap: 20px; width: 100%; max-width: 900px; flex-wrap: wrap; justify-content: center;
+    }
+
     .card {
       background: rgba(255,255,255,0.04);
       border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 20px; padding: 40px; width: min(500px, 90vw);
-      box-shadow: 0 20px 60px rgba(0,0,0,0.4); backdrop-filter: blur(8px);
+      border-radius: 20px; padding: 30px; width: 100%; max-width: 400px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.4); backdrop-filter: blur(8px); box-sizing: border-box;
     }
-    h1 { margin: 0 0 8px; font-size: 28px; }
+    
+    .terminal-card { max-width: 450px; display: flex; flex-direction: column; }
+
+    h1 { margin: 0 0 8px; font-size: 26px; }
     .sub { color: #8b8ba8; margin-bottom: 24px; font-size: 14px; }
+    
     input {
       width: 100%; box-sizing: border-box; padding: 14px; border-radius: 10px;
       border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.4);
-      color: white; font-size: 16px; margin-bottom: 16px; outline: none;
+      color: white; font-size: 16px; margin-bottom: 16px; outline: none; transition: 0.2s;
     }
     input:focus { border-color: #6366f1; }
+    
     button {
       width: 100%; padding: 14px; border-radius: 10px; border: none;
       background: #6366f1; color: white; font-size: 16px; font-weight: bold;
@@ -32,6 +42,7 @@
     }
     button:hover { background: #4f46e5; }
     button:disabled { background: #3730a3; cursor: not-allowed; opacity: 0.7; }
+    
     .code-box {
       display: none; text-align: center; margin-top: 20px;
       padding: 20px; background: rgba(99,102,241,0.1); border-radius: 10px;
@@ -41,27 +52,60 @@
     .status { margin-top: 15px; font-size: 14px; text-align: center; color: #9a9ab5; }
     .success { color: #4ade80; }
     .error { color: #f87171; }
+
+    /* Terminal UI */
+    .term-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-size: 13px; color: #8b8ba8;}
+    .badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
+    .badge.on { background: rgba(74,222,128,0.2); color: #4ade80; }
+    .badge.off { background: rgba(248,113,113,0.2); color: #f87171; }
+    
+    .terminal {
+      flex: 1; background: #0a0a0f; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1);
+      padding: 15px; font-family: monospace; font-size: 13px; overflow-y: auto; height: 280px;
+    }
+    .log-line { margin-bottom: 8px; line-height: 1.4; }
+    .log-time { color: #6366f1; margin-right: 8px; }
   </style>
 </head>
 <body>
-  <div class="card">
-    <h1>🔑 303-XMD</h1>
-    <div class="sub">Enter your WhatsApp number to generate a pairing code.</div>
 
-    <input type="tel" id="phone" placeholder="e.g. 254712345678" />
-    <button id="btn" onclick="pair()">Get Pairing Code</button>
+  <div class="container">
+    <!-- Pairing Panel -->
+    <div class="card">
+      <h1>🔑 303-XMD</h1>
+      <div class="sub">Enter your WhatsApp number to generate a pairing code.</div>
 
-    <div class="code-box" id="codeBox">
-      <div style="font-size:14px; color:#9a9ab5;">Enter this on your phone:</div>
-      <div class="code" id="code"></div>
+      <input type="tel" id="phone" placeholder="e.g. 254712345678" />
+      <button id="btn" onclick="pair()">Get Pairing Code</button>
+
+      <div class="code-box" id="codeBox">
+        <div style="font-size:14px; color:#9a9ab5;">Enter this on your phone:</div>
+        <div class="code" id="code"></div>
+      </div>
+
+      <div class="status" id="status"></div>
     </div>
 
-    <div class="status" id="status"></div>
+    <!-- Terminal Panel -->
+    <div class="card terminal-card">
+      <div class="term-header">
+        <span>System Status</span>
+        <div>
+          <span class="badge off" id="dbBadge">DB: Checking</span>
+          <span class="badge off" id="sessBadge">Sessions: 0</span>
+        </div>
+      </div>
+      <div class="terminal" id="terminal">
+        <div class="log-line"><span class="log-time">[sys]</span> Waiting for connection...</div>
+      </div>
+    </div>
   </div>
 
   <script>
     let pollInterval;
+    let sysInterval;
 
+    // ---- Pairing Logic ----
     async function pair() {
       const phone = document.getElementById("phone").value.trim();
       const btn = document.getElementById("btn");
@@ -80,11 +124,8 @@
       codeBox.style.display = "none";
 
       try {
-        const res = await fetch("/api/pair", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ phone })
-        });
+        // GET Request matching your new index.js
+        const res = await fetch(`/api/pair?sessionId=${phone}&num=${phone}`);
         const data = await res.json();
 
         if (data.error) throw new Error(data.error);
@@ -118,9 +159,52 @@
             status.innerHTML = '<span class="success">✅ Device linked successfully! Bot is now running.</span>';
             btn.textContent = "Connected";
           }
-        } catch (e) { /* ignore network errors during poll */ }
+        } catch (e) {}
       }, 3000);
     }
+
+    // ---- Live Status Logic ----
+    async function checkStatus() {
+      try {
+        const res = await fetch("/health");
+        const data = await res.json();
+        
+        const dbBadge = document.getElementById("dbBadge");
+        dbBadge.textContent = data.dbConnected ? "DB: Online" : "DB: Offline";
+        dbBadge.className = `badge ${data.dbConnected ? "on" : "off"}`;
+
+        const sessBadge = document.getElementById("sessBadge");
+        sessBadge.textContent = `Sessions: ${data.activeSessions}`;
+        sessBadge.className = `badge ${data.activeSessions > 0 ? "on" : "off"}`;
+
+        // Fake terminal logs for visual effect
+        const term = document.getElementById("terminal");
+        if (term.children.length === 1 && term.innerHTML.includes("Waiting")) {
+            term.innerHTML = "";
+        }
+        
+        if (data.dbConnected && term.innerHTML === "") {
+            addLog("Connected to MongoDB successfully.");
+            addLog("System initialized. Waiting for pairings...");
+        }
+
+      } catch (e) {
+        const dbBadge = document.getElementById("dbBadge");
+        dbBadge.textContent = "DB: Error";
+        dbBadge.className = "badge off";
+      }
+    }
+
+    function addLog(msg) {
+        const term = document.getElementById("terminal");
+        const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+        term.innerHTML += `<div class="log-line"><span class="log-time">[${time}]</span> ${msg}</div>`;
+        term.scrollTop = term.scrollHeight;
+    }
+
+    // Start status checker immediately
+    checkStatus();
+    sysInterval = setInterval(checkStatus, 5000);
   </script>
 </body>
 </html>
