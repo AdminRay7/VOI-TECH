@@ -1,18 +1,28 @@
 document.addEventListener("DOMContentLoaded", () => {
     const tabs = [
-        { name: "Dashboard", icon: "📊", url: "/dashboard.html" },
-        { name: "Pairing Panel", icon: "📱", url: "/index.html" },
-        { name: "AI Control", icon: "🤖", url: "/ai.html" },
-        { name: "Settings", icon: "⚙️", url: "/settings.html" },
-        { name: "Documentation", icon: "📖", url: "/docs.html" }
+        { name: "Dashboard", icon: "📊", url: "/" },
+        { name: "Pairing Panel", icon: "📱", url: "/pair" },
+        { name: "AI Control", icon: "🤖", url: "/ai" },
+        { name: "Settings", icon: "⚙️", url: "/settings" },
+        { name: "Documentation", icon: "📖", url: "/docs" }
     ];
 
     let currentPath = window.location.pathname;
-    if (currentPath === "/" || currentPath === "") currentPath = "/dashboard.html";
+    
+    // Handle the root path matching the Dashboard
+    if (currentPath === "/" || currentPath === "") {
+        currentPath = "/";
+    }
 
     let linksHTML = "";
     tabs.forEach(tab => {
-        const isActive = currentPath === tab.url;
+        // Check if the current URL matches the tab URL
+        let isActive = currentPath === tab.url;
+        
+        // If they loaded /pair but the tab is /pair, highlight it
+        // If they loaded /index, also highlight /pair
+        if (tab.url === "/pair" && (currentPath === "/pair" || currentPath === "/index")) isActive = true;
+
         const activeClass = isActive ? "active" : "";
         
         linksHTML += `
@@ -49,7 +59,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
     document.body.insertAdjacentHTML("afterbegin", sidebarHTML);
 
-    // Inject Google Fonts
     const fontLink = document.createElement("link");
     fontLink.href = "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap";
     fontLink.rel = "stylesheet";
