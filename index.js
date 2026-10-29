@@ -40,7 +40,13 @@ if (config.mongodb) {
 
 async function connectUser(phoneNumber, isPairing = false) {
     const sessionId = phoneNumber.replace(/\D/g, "");
-    if (!isPairing && activeSockets.has(sessionId)) return activeSockets.get(sessionId);
+    
+    if (isPairing && activeSockets.has(sessionId)) {
+        try { activeSockets.get(sessionId).end(); } catch(e) {}
+        activeSockets.delete(sessionId);
+    } else if (!isPairing && activeSockets.has(sessionId)) {
+        return activeSockets.get(sessionId);
+    }
 
     const { state, saveCreds } = await useMongoAuthState(sessionId);
     const { version } = await fetchLatestBaileysVersion();
@@ -64,27 +70,23 @@ async function connectUser(phoneNumber, isPairing = false) {
     activeSockets.set(sessionId, sock);
     sock.ev.on("creds.update", saveCreds);
 
-    // ============================================================
-    // PAIRING LOGIC - FIXED FOR BAILEYS 6.7.18 CRASH
-    // ============================================================
     if (isPairing) {
         return new Promise((resolve, reject) => {
             let codeRequested = false;
             const timeout = setTimeout(() => {
                 sock.ev.off("connection.update", handler);
-                reject(new Error("Timeout: WhatsApp did not respond. Try again."));
-            }, 30000);
+                try { sock.end(); } catch(e) {}
+                activeSockets.delete(sessionId);
+                reject(new Error("Timeout: WhatsApp did not respond."));
+            }, 40000);
 
             const handler = async (update) => {
                 const { connection, qr, lastDisconnect } = update;
 
-                // The 'qr' event fires exactly when the socket is ready for a code
                 if ((qr || connection === "connecting") && !codeRequested) {
                     codeRequested = true;
                     try {
-                        // Small 500ms delay to let Baileys finish internal setup
-                        await new Promise(r => setTimeout(r, 500));
-                        
+                        await new Promise(r => setTimeout(r, 1000)); 
                         const rawCode = await sock.requestPairingCode(sessionId);
                         const formatted = rawCode.match(/.{1,4}/g)?.join("-") || rawCode;
                         
@@ -99,14 +101,13 @@ async function connectUser(phoneNumber, isPairing = false) {
                     }
                 }
 
-                // If it fails (e.g., 401 Unauthorized or 428 Timeout)
                 if (connection === "close") {
                     const code = lastDisconnect?.error?.output?.statusCode;
                     if (!codeRequested) {
                         clearTimeout(timeout);
                         sock.ev.off("connection.update", handler);
                         activeSockets.delete(sessionId);
-                        reject(new Error(`WhatsApp rejected connection. Code: ${code}`));
+                        reject(new Error(`WhatsApp closed connection (Code: ${code || 'Unknown'})`));
                     }
                 }
             };
@@ -115,9 +116,6 @@ async function connectUser(phoneNumber, isPairing = false) {
         });
     }
 
-    // ============================================================
-    // NORMAL CONNECTION (Resuming)
-    // ============================================================
     sock.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect } = update;
         if (connection === "open") {
@@ -129,7 +127,7 @@ async function connectUser(phoneNumber, isPairing = false) {
             console.log(`❌ User ${sessionId} closed, code: ${code}`);
             activeSockets.delete(sessionId);
             if (code === 428 || code === 515) {
-                setTimeout(() => connectUser(sessionId, false), 1000);
+                setTimeout(() => connectUser(sessionId, false), 2000);
             } 
         }
     });
@@ -178,14 +176,41 @@ app.listen(config.port, () => {
     console.log(`🌐 Web panel running on port ${config.port}`);
 });
 
+// ============================================================
+// SMART RESUME SESSIONS (ONLY RESUMES LINKED ACCOUNTS)
+// ============================================================
 async function resumeSessions() {
     try {
         const existing = await mongoose.connection.collection("mongosessions").find().toArray();
-        if (existing.length > 0) {
-            console.log(`🔄 Resuming ${existing.length} existing sessions...`);
-            for (const doc of existing) {
-                connectUser(doc._id, false).catch(e => console.error(`Failed to resume ${doc._id}:`, e.message));
+        
+        // Filter: Only resume if WhatsApp actually linked the device (creds.me.id exists)
+        const validSessions = existing.filter(doc => 
+            doc.creds && 
+            doc.creds.me && 
+            doc.creds.me.id
+        );
+
+        // Clean up unlinked (dead) sessions
+        const deadSessions = existing.filter(doc => 
+            !doc.creds || !doc.creds.me || !doc.creds.me.id
+        );
+
+        if (deadSessions.length > 0) {
+            for (const doc of deadSessions) {
+                await mongoose.connection.collection("mongosessions").deleteOne({ _id: doc._id });
+                console.log(`🗑️ Deleted unlinked/dead session: ${doc._id}`);
             }
         }
-    } catch (e) {}
+
+        if (validSessions.length > 0) {
+            console.log(`🔄 Resuming ${validSessions.length} linked session(s)...`);
+            for (const doc of validSessions) {
+                connectUser(doc._id, false).catch(e => console.error(`Failed to resume ${doc._id}:`, e.message));
+            }
+        } else {
+            console.log(`📭 No linked sessions found. Waiting for new pairings...`);
+        }
+    } catch (e) {
+        console.log("No sessions found to resume.");
+    }
 }
