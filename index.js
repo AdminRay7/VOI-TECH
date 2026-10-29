@@ -5,7 +5,7 @@ const {
     DisconnectReason,
     Browsers,
     makeCacheableSignalKeyStore,
-    fetchLatestWaWebVersion // FIX: Use Web version to prevent immediate drops
+    fetchLatestBaileysVersion
 } = require("@whiskeysockets/baileys");
 const pino = require("pino");
 const express = require("express");
@@ -20,18 +20,14 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-// ---- Active Sessions Map ----
 const activeSockets = new Map();
 const pairingCodes = new Map(); 
 
-// ============================================================
-// MONGODB CONNECTION & RESUME
-// ============================================================
 if (config.mongodb) {
     mongoose.connect(config.mongodb)
         .then(() => {
             console.log("✅ MongoDB Connected");
-            resumeSessions(); // Only resume after DB is ready
+            resumeSessions(); 
         })
         .catch(e => {
             console.error("❌ MongoDB Error:", e.message);
@@ -42,17 +38,12 @@ if (config.mongodb) {
     process.exit(1);
 }
 
-// ============================================================
-// START A SOCKET FOR A SPECIFIC USER
-// ============================================================
 async function connectUser(phoneNumber, isPairing = false) {
     const sessionId = phoneNumber.replace(/\D/g, "");
-    
-    // If we are just resuming and it's already running, return
     if (!isPairing && activeSockets.has(sessionId)) return activeSockets.get(sessionId);
 
     const { state, saveCreds } = await useMongoAuthState(sessionId);
-    const { version } = await fetchLatestWaWebVersion();
+    const { version } = await fetchLatestBaileysVersion();
 
     const sock = makeWASocket({
         version,
@@ -66,7 +57,7 @@ async function connectUser(phoneNumber, isPairing = false) {
         markOnlineOnConnect: false,
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
-        keepAliveIntervalMs: 25000, // Heroku WebSocket ping fix
+        keepAliveIntervalMs: 25000,
         retryRequestDelayMs: 2000
     });
 
@@ -74,24 +65,28 @@ async function connectUser(phoneNumber, isPairing = false) {
     sock.ev.on("creds.update", saveCreds);
 
     // ============================================================
-    // PAIRING LOGIC (Event-Driven)
+    // PAIRING LOGIC - FIXED FOR BAILEYS 6.7.18 CRASH
     // ============================================================
     if (isPairing) {
         return new Promise((resolve, reject) => {
-            // 30 second timeout to prevent hanging forever
+            let codeRequested = false;
             const timeout = setTimeout(() => {
                 sock.ev.off("connection.update", handler);
-                reject(new Error("Timeout waiting for WhatsApp to connect. Try again."));
+                reject(new Error("Timeout: WhatsApp did not respond. Try again."));
             }, 30000);
 
             const handler = async (update) => {
                 const { connection, qr, lastDisconnect } = update;
 
-                // WhatsApp is ready to generate the code
-                if (qr || connection === "connecting") {
+                // The 'qr' event fires exactly when the socket is ready for a code
+                if ((qr || connection === "connecting") && !codeRequested) {
+                    codeRequested = true;
                     try {
-                        const code = await sock.requestPairingCode(sessionId);
-                        const formatted = code.match(/.{1,4}/g)?.join("-") || code;
+                        // Small 500ms delay to let Baileys finish internal setup
+                        await new Promise(r => setTimeout(r, 500));
+                        
+                        const rawCode = await sock.requestPairingCode(sessionId);
+                        const formatted = rawCode.match(/.{1,4}/g)?.join("-") || rawCode;
                         
                         clearTimeout(timeout);
                         sock.ev.off("connection.update", handler);
@@ -99,17 +94,20 @@ async function connectUser(phoneNumber, isPairing = false) {
                     } catch (e) {
                         clearTimeout(timeout);
                         sock.ev.off("connection.update", handler);
+                        activeSockets.delete(sessionId);
                         reject(e);
                     }
                 }
 
-                // If it drops before we get a code
+                // If it fails (e.g., 401 Unauthorized or 428 Timeout)
                 if (connection === "close") {
                     const code = lastDisconnect?.error?.output?.statusCode;
-                    clearTimeout(timeout);
-                    sock.ev.off("connection.update", handler);
-                    activeSockets.delete(sessionId);
-                    reject(new Error(`Connection closed before pairing. Code: ${code || 'Unknown'}`));
+                    if (!codeRequested) {
+                        clearTimeout(timeout);
+                        sock.ev.off("connection.update", handler);
+                        activeSockets.delete(sessionId);
+                        reject(new Error(`WhatsApp rejected connection. Code: ${code}`));
+                    }
                 }
             };
 
@@ -118,43 +116,28 @@ async function connectUser(phoneNumber, isPairing = false) {
     }
 
     // ============================================================
-    // NORMAL CONNECTION LOGIC (For Resuming)
+    // NORMAL CONNECTION (Resuming)
     // ============================================================
     sock.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect } = update;
-
         if (connection === "open") {
             console.log(`✅ User connected: ${sessionId}`);
             pairingCodes.delete(sessionId); 
         }
-
         if (connection === "close") {
             const code = lastDisconnect?.error?.output?.statusCode;
             console.log(`❌ User ${sessionId} closed, code: ${code}`);
-
             activeSockets.delete(sessionId);
-
-            // 428 = Heroku Timeout, 515 = Restart required
             if (code === 428 || code === 515) {
-                console.log(`🔄 Reconnecting ${sessionId} immediately...`);
                 setTimeout(() => connectUser(sessionId, false), 1000);
             } 
-            // 401 = Logged out
-            else if (code === 401) {
-                console.log(`🚪 User ${sessionId} logged out.`);
-            }
         }
     });
 
     sock.ev.on("messages.upsert", async (evt) => {
         if (!evt?.messages?.length) return;
         try {
-            await handler(sock, evt, {
-                userId: sessionId,
-                config,
-                helpers: {},
-                services
-            });
+            await handler(sock, evt, { userId: sessionId, config, helpers: {}, services });
         } catch (e) {
             console.error("Handler Error:", e);
         }
@@ -163,9 +146,6 @@ async function connectUser(phoneNumber, isPairing = false) {
     return sock;
 }
 
-// ============================================================
-// WEB ENDPOINTS
-// ============================================================
 app.post("/api/pair", async (req, res) => {
     let { phone } = req.body;
     if (!phone) return res.status(400).json({ error: "Phone number required" });
@@ -174,14 +154,10 @@ app.post("/api/pair", async (req, res) => {
     if (phone.length < 10) return res.status(400).json({ error: "Invalid phone number" });
 
     try {
-        // Pass true to trigger the pairing logic
         const { sock, formatted } = await connectUser(phone, true);
-
         pairingCodes.set(phone, formatted);
         console.log(`🔑 Generated code for ${phone}: ${formatted}`);
-        
         res.json({ code: formatted });
-
     } catch (e) {
         console.error("Pair error:", e.message);
         res.status(500).json({ error: e.message });
@@ -198,9 +174,6 @@ app.get("/api/status/:phone", (req, res) => {
     });
 });
 
-// ============================================================
-// BOOT & RESUME
-// ============================================================
 app.listen(config.port, () => {
     console.log(`🌐 Web panel running on port ${config.port}`);
 });
@@ -211,13 +184,8 @@ async function resumeSessions() {
         if (existing.length > 0) {
             console.log(`🔄 Resuming ${existing.length} existing sessions...`);
             for (const doc of existing) {
-                // Pass false so it acts as a normal connection, not a pairing request
-                connectUser(doc._id, false).catch(e => {
-                    console.error(`Failed to resume ${doc._id}:`, e.message);
-                });
+                connectUser(doc._id, false).catch(e => console.error(`Failed to resume ${doc._id}:`, e.message));
             }
         }
-    } catch (e) { 
-        // Ignore if collection doesn't exist yet
-    }
+    } catch (e) {}
 }
