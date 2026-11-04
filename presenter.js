@@ -154,10 +154,20 @@ async function handler(conn, m, options = {}) {
             }
         }
 
+        // Get group metadata for admin checks
+        let isAdmin = false;
+        if (isGroup) {
+            try {
+                const groupMetadata = await conn.groupMetadata(from);
+                const participant = groupMetadata.participants.find(p => p.id === sender);
+                isAdmin = participant?.admin === 'admin' || participant?.admin === 'superadmin';
+            } catch (e) {}
+        }
+
         const ctx = {
             conn, msg, from, sender, pushname,
             userId, config, body, args, command, prefix,
-            isGroup, isChannel, isCmd, isOwner,
+            isGroup, isChannel, isCmd, isOwner, isAdmin,
             isPrivateMode: !!privateMode,
             canUse,
             fancy, 
@@ -173,6 +183,44 @@ async function handler(conn, m, options = {}) {
             },
         };
 
+        // ============================================================
+        // 🛡️ ANTI-PROTECTION ENFORCEMENT (Auto-Delete)
+        // ============================================================
+        if (isGroup && !isAdmin && !isOwner) {
+            // Anti-Link
+            if (global.antiLinkGroups?.has(from) && body) {
+                const linkRegex = /chat\.whatsapp\.com|https?:\/\/[^\s]+/gi;
+                if (linkRegex.test(body)) {
+                    try {
+                        await conn.sendMessage(from, { delete: msg.key });
+                        await conn.sendMessage(from, { text: `⚠️ @${sender.split('@')[0]} links are not allowed here!`, mentions: [sender] });
+                        return; // Stop processing further
+                    } catch (e) { console.error("Anti-Link delete failed:", e.message); }
+                }
+            }
+
+            // Anti-Spam
+            if (global.antiSpamGroups?.has(from) && body) {
+                if (!global.spamTracker) global.spamTracker = new Map();
+                const spamKey = `${from}_${sender}`;
+                const now = Date.now();
+                let userSpam = global.spamTracker.get(spamKey) || [];
+                userSpam = userSpam.filter(time => now - time < 5000); // 5 second window
+                userSpam.push(now);
+                global.spamTracker.set(spamKey, userSpam);
+
+                if (userSpam.length > 5) { // More than 5 messages in 5 seconds
+                    try {
+                        await conn.sendMessage(from, { delete: msg.key });
+                        await conn.sendMessage(from, { text: `🚨 @${sender.split('@')[0]} kicked for spamming!`, mentions: [sender] });
+                        await conn.groupParticipantsUpdate(from, [sender], "remove");
+                        global.spamTracker.delete(spamKey);
+                        return; // Stop processing further
+                    } catch (e) { console.error("Anti-Spam kick failed:", e.message); }
+                }
+            }
+        }
+
         try {
             if (await routeButtons(conn, msg, ctx, commands, services)) return;
         } catch (e) { console.error("[presenter] routeButtons fatal:", e?.message || e); }
@@ -183,8 +231,15 @@ async function handler(conn, m, options = {}) {
             } catch (e) { console.error("[presenter] routeGameInput fatal:", e?.message || e); }
         }
 
-        // AI is handled directly in index.js before reaching this point.
-        // We only process commands here.
+        // AI AUTO-REPLY TRIGGER
+        const isImage = !!normalized.imageMessage;
+
+        if (!isCmd && (body || isImage)) {
+            try {
+                if (await routeAutoReply(conn, msg, ctx, commands)) return;
+            } catch (e) { console.error("[presenter] routeAutoReply fatal:", e?.message || e); }
+        }
+
         if (!isCmd || !command) return;
 
         const mod = commands.get(command);
@@ -309,6 +364,13 @@ async function routeGameInput(ctx, services) {
     } catch { return false; }
     if (!isDir) return false;
     try { return (await services.gameEngine.sendInput(userId, from, sender, trimmed)) === true; } catch { return false; }
+}
+
+const AI_COMMAND_NAME = "chat-ai";
+async function routeAutoReply(conn, msg, ctx, commands) {
+    const ai = commands.get(AI_COMMAND_NAME);
+    if (!ai || typeof ai.handleAutoReply !== "function") return false;
+    try { return (await ai.handleAutoReply(conn, msg, ctx)) === true; } catch (e) { return false; }
 }
 
 module.exports = handler;
