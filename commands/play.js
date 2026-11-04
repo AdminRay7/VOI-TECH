@@ -1,7 +1,6 @@
 const axios = require("axios");
 const config = require("../config");
 
-// Helper function to wait and retry
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 module.exports = {
@@ -32,12 +31,12 @@ module.exports = {
             const videoId = video.id.videoId;
             const title = video.snippet.title;
 
-            await ctx.reply(`🎵 *Found:* ${title}\n⏳ Converting to MP3, please wait...`);
+            await ctx.reply(`🎵 *Found:* ${title}\n⏳ Fetching audio, please wait...`);
 
-            // 2. Download MP3 (WITH RETRY LOGIC)
+            // 2. Get Audio Link via RapidAPI
             let audioUrl = null;
             let attempts = 0;
-            const maxAttempts = 10; // Try 10 times (10 seconds max)
+            const maxAttempts = 10;
 
             while (attempts < maxAttempts) {
                 const dlRes = await axios.get(`https://youtube-mp36.p.rapidapi.com/dl?id=${videoId}`, {
@@ -51,13 +50,11 @@ module.exports = {
 
                 if (status === "ok") {
                     audioUrl = dlRes.data.link;
-                    break; // Success! Exit the loop
+                    break; 
                 } else if (status === "processing") {
-                    // Still converting, wait 1 second and try again
                     await sleep(1000);
                     attempts++;
                 } else {
-                    // Failed conversion
                     return ctx.reply(`❌ Failed to convert song. Status: ${status}`);
                 }
             }
@@ -66,9 +63,16 @@ module.exports = {
                 return ctx.reply("❌ Timed out while converting the song. Try again later.");
             }
 
-            // 3. Send the Audio
+            // 3. DOWNLOAD THE AUDIO TO BUFFER (Bypasses RapidAPI IP Block)
+            const audioRes = await axios.get(audioUrl, { 
+                responseType: 'arraybuffer',
+                headers: { 'User-Agent': 'Mozilla/5.0' }
+            });
+            const audioBuffer = Buffer.from(audioRes.data);
+
+            // 4. Send the buffer to WhatsApp
             await conn.sendMessage(ctx.from, {
-                audio: { url: audioUrl },
+                audio: audioBuffer,
                 mimetype: "audio/mp4",
                 fileName: `${title}.mp3`,
                 caption: `🎵 *${title}*`
