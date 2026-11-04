@@ -1,53 +1,40 @@
-const ytdl = require("ytdl-core");
-const yts = require("yt-search"); // Using yt-search for reliable searching
+const axios = require("axios");
 
 module.exports = {
     name: "play",
     category: "download",
-    aliases: ["song", "music", "ytmp3"],
-    description: "Download a song directly from YouTube",
+    aliases: ["song", "music"],
+    description: "Download a song from YouTube (Bypass)",
     async execute(conn, msg, args, ctx) {
-        if (args[0] && (args[0].toLowerCase() === "play" || args[0].toLowerCase() === "song")) {
-            args.shift();
-        }
-
-        if (!args.length) return ctx.reply("❌ Provide a song name. Example: `.play Yatapita`");
-        
+        if (!args.length) return ctx.reply("❌ Provide a song name.");
         const query = args.join(" ");
-        await ctx.reply(`🔍 Searching for *${query}*...`);
+        await ctx.reply(`🔍 Searching...`);
 
         try {
-            // 1. Search YouTube directly
-            const searchResults = await yts(query);
-            if (!searchResults.videos.length) {
-                return ctx.reply("❌ No results found.");
-            }
+            // 1. Search using a free API
+            const search = await axios.get(`https://api.zenkeymon.xyz/search?q=${encodeURIComponent(query)}`);
+            const video = search.data.result[0]; 
+            
+            await ctx.reply(`🎵 Found: *${video.title}*\n⏳ Downloading...`);
 
-            const video = searchResults.videos[0];
-            const videoUrl = video.url;
-            const title = video.title;
+            // 2. Download using Cobalt (Free, bypasses Heroku block)
+            const cobalt = await axios.post("https://api.cobalt.tools/", {
+                url: video.url,
+                downloadMode: "audio",
+                audioFormat: "mp3"
+            }, { headers: { "Accept": "application/json", "Content-Type": "application/json" } });
 
-            await ctx.reply(`🎵 *Found:* ${title}\n⏳ Downloading audio directly, please wait...`);
-
-            // 2. Download audio directly to a buffer (No APIs, no blocks)
-            const stream = ytdl(videoUrl, { filter: "audioonly", quality: "highestaudio" });
-            const chunks = [];
-            for await (const chunk of stream) {
-                chunks.push(chunk);
-            }
-            const audioBuffer = Buffer.concat(chunks);
-
-            // 3. Send the audio file
+            const audioRes = await axios.get(cobalt.data.url, { responseType: "arraybuffer" });
+            
             await conn.sendMessage(ctx.from, {
-                audio: audioBuffer,
+                audio: Buffer.from(audioRes.data),
                 mimetype: "audio/mp4",
-                fileName: `${title}.mp3`,
-                caption: `🎵 *${title}*`
+                fileName: `${video.title}.mp3`
             }, { quoted: msg });
 
         } catch (error) {
-            console.error("Play command error:", error.message);
-            await ctx.reply("❌ An error occurred while downloading the song. YouTube may be blocking the server IP. Try again later.");
+            console.error(error);
+            await ctx.reply("❌ Failed. The API might be down.");
         }
     }
 };
