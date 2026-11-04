@@ -31,6 +31,35 @@ function required(name, value) {
     return value;
 }
 
+// ============================================================
+// EXTERNAL BOT APIs
+// ============================================================
+const globalAPIs = {
+    xteam: 'https://api.xteam.xyz',
+    dzx: 'https://api.dhamzxploit.my.id',
+    lol: 'https://api.lolhuman.xyz',
+    violetics: 'https://violetics.pw',
+    neoxr: 'https://api.neoxr.my.id',
+    zenzapis: 'https://zenzapis.xyz',
+    akuari: 'https://api.akuari.my.id',
+    akuari2: 'https://apimu.my.id',
+    nrtm: 'https://fg-nrtm.ddns.net',
+    bg: 'http://bochil.ddns.net',
+    fgmods: 'https://api-fgmods.ddns.net'
+};
+
+const globalAPIKeys = {
+    'https://api.xteam.xyz': 'd90a9e986e18778b',
+    'https://api.lolhuman.xyz': '85faf717d0545d14074659ad',
+    'https://api.neoxr.my.id': 'yourkey',
+    'https://violetics.pw': 'beta',
+    'https://zenzapis.xyz': 'yourkey',
+    'https://api-fgmods.ddns.net': 'fg-dylux'
+};
+
+// ============================================================
+// EXPORTS
+// ============================================================
 module.exports = {
     botName:     str(process.env.BOT_NAME,     "303-XMD"),
     ownerNumber: required("OWNER_NUMBER", str(process.env.OWNER_NUMBER, "")),
@@ -122,5 +151,9 @@ module.exports = {
     logLevel: str(process.env.LOG_LEVEL, "silent"),
 
     scamWords: ["free money", "lottery", "winner", "cash prize", "claim your prize"],
-    pornWords: ["porn", "xxx", "nsfw", "nude"]
+    pornWords: ["porn", "xxx", "nsfw", "nude"],
+
+    // ---- BOT APIs ----
+    APIs: globalAPIs,
+    APIKeys: globalAPIKeys
 };
