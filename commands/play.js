@@ -1,76 +1,43 @@
-const axios = require("axios");
-const config = require("../config");
-
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const ytdl = require("ytdl-core");
+const yts = require("yt-search"); // Using yt-search for reliable searching
 
 module.exports = {
     name: "play",
     category: "download",
-    aliases: ["song", "music"],
-    description: "Download a song from YouTube",
+    aliases: ["song", "music", "ytmp3"],
+    description: "Download a song directly from YouTube",
     async execute(conn, msg, args, ctx) {
+        if (args[0] && (args[0].toLowerCase() === "play" || args[0].toLowerCase() === "song")) {
+            args.shift();
+        }
+
         if (!args.length) return ctx.reply("❌ Provide a song name. Example: `.play Yatapita`");
         
         const query = args.join(" ");
         await ctx.reply(`🔍 Searching for *${query}*...`);
 
         try {
-            // 1. Search YouTube
-            const searchRes = await axios.get(`https://youtube-v31.p.rapidapi.com/search?q=${encodeURIComponent(query)}&part=snippet&maxResults=1`, {
-                headers: {
-                    'x-rapidapi-key': config.rapidApiKey,
-                    'x-rapidapi-host': config.searchApiHost
-                }
-            });
-
-            if (!searchRes.data.items || searchRes.data.items.length === 0) {
+            // 1. Search YouTube directly
+            const searchResults = await yts(query);
+            if (!searchResults.videos.length) {
                 return ctx.reply("❌ No results found.");
             }
 
-            const video = searchRes.data.items[0];
-            const videoId = video.id.videoId;
-            const title = video.snippet.title;
+            const video = searchResults.videos[0];
+            const videoUrl = video.url;
+            const title = video.title;
 
-            await ctx.reply(`🎵 *Found:* ${title}\n⏳ Fetching audio, please wait...`);
+            await ctx.reply(`🎵 *Found:* ${title}\n⏳ Downloading audio directly, please wait...`);
 
-            // 2. Get Audio Link via RapidAPI
-            let audioUrl = null;
-            let attempts = 0;
-            const maxAttempts = 10;
-
-            while (attempts < maxAttempts) {
-                const dlRes = await axios.get(`https://youtube-mp36.p.rapidapi.com/dl?id=${videoId}`, {
-                    headers: {
-                        'x-rapidapi-key': config.rapidApiKey,
-                        'x-rapidapi-host': config.rapidApiHost
-                    }
-                });
-
-                const status = dlRes.data.status;
-
-                if (status === "ok") {
-                    audioUrl = dlRes.data.link;
-                    break; 
-                } else if (status === "processing") {
-                    await sleep(1000);
-                    attempts++;
-                } else {
-                    return ctx.reply(`❌ Failed to convert song. Status: ${status}`);
-                }
+            // 2. Download audio directly to a buffer (No APIs, no blocks)
+            const stream = ytdl(videoUrl, { filter: "audioonly", quality: "highestaudio" });
+            const chunks = [];
+            for await (const chunk of stream) {
+                chunks.push(chunk);
             }
+            const audioBuffer = Buffer.concat(chunks);
 
-            if (!audioUrl) {
-                return ctx.reply("❌ Timed out while converting the song. Try again later.");
-            }
-
-            // 3. DOWNLOAD THE AUDIO TO BUFFER (Bypasses RapidAPI IP Block)
-            const audioRes = await axios.get(audioUrl, { 
-                responseType: 'arraybuffer',
-                headers: { 'User-Agent': 'Mozilla/5.0' }
-            });
-            const audioBuffer = Buffer.from(audioRes.data);
-
-            // 4. Send the buffer to WhatsApp
+            // 3. Send the audio file
             await conn.sendMessage(ctx.from, {
                 audio: audioBuffer,
                 mimetype: "audio/mp4",
@@ -80,7 +47,7 @@ module.exports = {
 
         } catch (error) {
             console.error("Play command error:", error.message);
-            await ctx.reply("❌ An error occurred while downloading the song.");
+            await ctx.reply("❌ An error occurred while downloading the song. YouTube may be blocking the server IP. Try again later.");
         }
     }
 };
