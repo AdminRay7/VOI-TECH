@@ -1,40 +1,66 @@
 const axios = require("axios");
+const config = require("../config");
 
 module.exports = {
     name: "play",
     category: "download",
-    aliases: ["song", "music"],
-    description: "Download a song from YouTube (Bypass)",
+    aliases: ["song", "music", "ytmp3"],
+    description: "Download a song from YouTube",
     async execute(conn, msg, args, ctx) {
-        if (!args.length) return ctx.reply("❌ Provide a song name.");
+        // Clean up search query
+        if (args[0] && (args[0].toLowerCase() === "play" || args[0].toLowerCase() === "song")) {
+            args.shift();
+        }
+
+        if (!args.length) return ctx.reply("❌ Provide a song name. Example: `.play Yatapita`");
+        
         const query = args.join(" ");
-        await ctx.reply(`🔍 Searching...`);
+        await ctx.reply(`🔍 Searching for *${query}*...`);
 
         try {
-            // 1. Search using a free API
-            const search = await axios.get(`https://api.zenkeymon.xyz/search?q=${encodeURIComponent(query)}`);
-            const video = search.data.result[0]; 
-            
-            await ctx.reply(`🎵 Found: *${video.title}*\n⏳ Downloading...`);
+            // 1. Search using XTeam API
+            const searchUrl = `${config.APIs.xteam}/youtube?q=${encodeURIComponent(query)}&apikey=${config.APIKeys[config.APIs.xteam]}`;
+            const searchRes = await axios.get(searchUrl);
 
-            // 2. Download using Cobalt (Free, bypasses Heroku block)
-            const cobalt = await axios.post("https://api.cobalt.tools/", {
-                url: video.url,
-                downloadMode: "audio",
-                audioFormat: "mp3"
-            }, { headers: { "Accept": "application/json", "Content-Type": "application/json" } });
+            if (!searchRes.data || !searchRes.data.result || searchRes.data.result.length === 0) {
+                return ctx.reply("❌ No results found.");
+            }
 
-            const audioRes = await axios.get(cobalt.data.url, { responseType: "arraybuffer" });
+            const video = searchRes.data.result[0];
+            const videoUrl = video.url;
+            const title = video.title;
+
+            await ctx.reply(`🎵 *Found:* ${title}\n⏳ Downloading audio, please wait...`);
+
+            // 2. Download MP3 using XTeam API
+            const dlUrl = `${config.APIs.xteam}/ytmp3?url=${encodeURIComponent(videoUrl)}&apikey=${config.APIKeys[config.APIs.xteam]}`;
+            const dlRes = await axios.get(dlUrl);
+
+            if (!dlRes.data || !dlRes.data.result || !dlRes.data.result.url) {
+                return ctx.reply("❌ Failed to get download link from API.");
+            }
+
+            const audioUrl = dlRes.data.result.url;
+
+            // 3. Download the actual audio into a Buffer (Bypasses all IP blocks)
+            const audioRes = await axios.get(audioUrl, { 
+                responseType: 'arraybuffer',
+                headers: { 'User-Agent': 'Mozilla/5.0' }
+            });
             
+            const audioBuffer = Buffer.from(audioRes.data);
+
+            // 4. Send to WhatsApp
             await conn.sendMessage(ctx.from, {
-                audio: Buffer.from(audioRes.data),
+                audio: audioBuffer,
                 mimetype: "audio/mp4",
-                fileName: `${video.title}.mp3`
+                fileName: `${title}.mp3`,
+                caption: `🎵 *${title}*`
             }, { quoted: msg });
 
         } catch (error) {
-            console.error(error);
-            await ctx.reply("❌ Failed. The API might be down.");
+            console.error("Play command error:", error.message);
+            await ctx.reply("❌ An error occurred while downloading the song. The API might be down.");
         }
     }
 };
