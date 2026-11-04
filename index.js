@@ -143,6 +143,9 @@ async function useMongoDBAuthState(collection, sessionId) {
 // ============================================================
 if (!global.sessions) global.sessions = new Map();
 if (!global.mongoClient) global.mongoClient = null;
+if (!global.messageCache) global.messageCache = new Map(); // Anti-Delete Cache
+if (!global.statusCache) global.statusCache = new Map();  // Status Cache
+
 let pairingQueue = Promise.resolve();
 
 async function initMongo() {
@@ -196,16 +199,12 @@ async function bootSocket(sessionId, session, isResuming = false) {
         for (const call of calls) {
             if (call.status === 'ringing' || call.status === 'offer') {
                 console.log(`📞 Incoming call from ${call.from} - Rejecting immediately...`);
-                
+
                 try {
-                    // 1. Reject the call instantly
                     await conn.rejectCall(call.id, call.from);
-                    
-                    // 2. Send the message only once (on 'offer') to prevent spam
                     if (call.status === 'offer') {
                         const ownerName = config.ownerName || "the owner"; 
                         const antiCallMsg = `⚠️ *Anti-Call is Active* ⚠️\n\n${config.botName} cannot receive calls. There is no permission from *${ownerName}*. Please send a text message instead! 😊`;
-
                         await conn.sendMessage(call.from, { text: antiCallMsg });
                     }
                 } catch (error) {
@@ -239,7 +238,6 @@ async function bootSocket(sessionId, session, isResuming = false) {
                 );
             } catch {}
 
-            // WELCOME & RESTART MESSAGE LOGIC
             try {
                 const rawId = conn.user?.id || "";
                 const cleanNumber = rawId.split(':')[0].split('@')[0];
@@ -283,7 +281,7 @@ async function bootSocket(sessionId, session, isResuming = false) {
     });
 
     // ============================================================
-    // MESSAGE INTERCEPTOR (AI vs COMMANDS)
+    // MESSAGE INTERCEPTOR (AI vs COMMANDS + CACHING + STATUS)
     // ============================================================
     conn.ev.on("messages.upsert", async (m) => {
         const msg = m.messages[0];
@@ -291,6 +289,46 @@ async function bootSocket(sessionId, session, isResuming = false) {
 
         const from = msg.key.remoteJid;
         if (from.endsWith("@newsletter")) return;
+
+        // ============================================================
+        // 🛡️ CACHE MESSAGES & CAPTURE STATUS (New Additions)
+        // ============================================================
+        if (msg.key && msg.message) {
+            // 1. Save message for Anti-Delete
+            const cacheKey = `${sessionId}_${msg.key.id}`;
+            global.messageCache.set(cacheKey, { msg, timestamp: Date.now() });
+
+            if (global.messageCache.size > 500) {
+                const oldestKey = global.messageCache.keys().next().value;
+                global.messageCache.delete(oldestKey);
+            }
+
+            // 2. Capture Posted Statuses and send to self
+            if (from === "status@broadcast") {
+                const sender = msg.key.participant;
+                global.statusCache.set(msg.key.id, { msg, sender, timestamp: Date.now() });
+                
+                if (global.statusCache.size > 50) {
+                    const oldest = global.statusCache.keys().next().value;
+                    global.statusCache.delete(oldest);
+                }
+
+                try {
+                    const rawId = conn.user.id || "";
+                    const cleanNumber = rawId.split(':')[0].split('@')[0];
+                    const myJid = `${cleanNumber}@s.whatsapp.net`;
+
+                    await conn.sendMessage(myJid, { 
+                        text: `📸 *NEW STATUS POSTED*\nFrom: @${sender.split('@')[0]}`,
+                        mentions: [sender]
+                    });
+                    await conn.sendMessage(myJid, { forward: msg });
+                } catch (e) {
+                    console.error("Status forward error:", e.message);
+                }
+            }
+        }
+        // ============================================================
 
         const type = Object.keys(msg.message)[0];
         let body = "";
@@ -305,9 +343,9 @@ async function bootSocket(sessionId, session, isResuming = false) {
             const isFromMe = msg.key.fromMe;
             const botNumber = conn.user.id.split(':')[0];
             const senderNumber = (msg.key.participant || from).split('@')[0].split(':')[0];
-            
+
             if (!isFromMe && senderNumber !== botNumber && !config.ownerNumber.includes(senderNumber)) {
-                
+
                 let text = body;
                 let imageBuffer = null;
                 let mimeType = "image/jpeg";
@@ -362,6 +400,54 @@ async function bootSocket(sessionId, session, isResuming = false) {
             });
         } catch (err) {
             console.error(`[${sessionId}] presenter error:`, err.message);
+        }
+    });
+
+    // ============================================================
+    // 🛡️ ANTI-DELETE & DELETED STATUS ENFORCER (New Addition)
+    // ============================================================
+    conn.ev.on("messages.update", async (updates) => {
+        for (const update of updates) {
+            // Detect if a message was revoked/deleted
+            if (update.update?.message === null || update.update?.messageStubType === 1) {
+                
+                // Check if it was a normal message
+                const cacheKey = `${sessionId}_${update.key.id}`;
+                const cached = global.messageCache.get(cacheKey);
+
+                if (cached) {
+                    const deletedMsg = cached.msg;
+                    const sender = deletedMsg.key.participant || deletedMsg.key.remoteJid;
+                    
+                    if (deletedMsg.key.fromMe) continue;
+
+                    try {
+                        await conn.sendMessage(update.key.remoteJid, { 
+                            text: `🚨 *ANTI-DELETE DETECTED*\n\n👤 From: @${sender.split('@')[0]}\n🗑️ Message was deleted.\n\nResending below:`, 
+                            mentions: [sender] 
+                        });
+                        await conn.sendMessage(update.key.remoteJid, { forward: deletedMsg });
+                    } catch (e) {
+                        console.error("Anti-Delete Error:", e.message);
+                    }
+                }
+
+                // Check if it was a deleted status
+                const cachedStatus = global.statusCache.get(update.key.id);
+                if (cachedStatus) {
+                    try {
+                        const rawId = conn.user.id || "";
+                        const cleanNumber = rawId.split(':')[0].split('@')[0];
+                        const myJid = `${cleanNumber}@s.whatsapp.net`;
+
+                        await conn.sendMessage(myJid, { 
+                            text: `🚨 *DELETED STATUS CAPTURED*\nFrom: @${cachedStatus.sender.split('@')[0]}`,
+                            mentions: [cachedStatus.sender]
+                        });
+                        await conn.sendMessage(myJid, { forward: cachedStatus.msg });
+                    } catch (e) {}
+                }
+            }
         }
     });
 
