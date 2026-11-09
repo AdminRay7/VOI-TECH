@@ -56,7 +56,9 @@ app.post("/api/ai/chat", async (req, res) => {
     if (!message) return res.status(400).json({ error: "Message required" });
 
     try {
-        const reply = await getAIReply(message);
+        // Passing the dynamic bot info prompt for web chat too
+        const botInfoPrompt = `You are a WhatsApp bot named ${config.botName}. You were created by ${config.ownerName}. If asked who you are, reply "I am ${config.botName}, created by ${config.ownerName}." Keep answers short.`;
+        const reply = await getAIReply(message, botInfoPrompt);
         res.json({ reply });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -198,16 +200,13 @@ async function bootSocket(sessionId, session, isResuming = false) {
     session.conn = conn;
     conn.ev.on("creds.update", saveCreds);
 
-    // ============================================================
-    // 📞 ANTI-CALL FEATURE
-    // ============================================================
+    // ANTI-CALL
     conn.ev.on('call', async (calls) => {
         for (const call of calls) {
             if (call.status === 'ringing' || call.status === 'offer') {
                 try {
                     await conn.rejectCall(call.id, call.from);
                     if (call.status === 'offer') {
-                        const ownerName = config.ownerName || "the owner"; 
                         const antiCallMsg = `⚠️ *Anti-Call is Active* ⚠️\n\n${config.botName} cannot receive calls. Please send a text message instead! 😊`;
                         await conn.sendMessage(call.from, { text: antiCallMsg });
                     }
@@ -216,15 +215,11 @@ async function bootSocket(sessionId, session, isResuming = false) {
         }
     });
 
-    // ============================================================
     // CONNECTION UPDATE
-    // ============================================================
     conn.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect } = update;
 
-        if (connection === "connecting") {
-            session.socketReady = true;
-        }
+        if (connection === "connecting") session.socketReady = true;
 
         if (connection === "open") {
             session.socketReady = true;
@@ -271,9 +266,7 @@ async function bootSocket(sessionId, session, isResuming = false) {
         }
     });
 
-    // ============================================================
     // MESSAGE INTERCEPTOR (AI, CACHE, AUTOMATIONS, & ANTI)
-    // ============================================================
     conn.ev.on("messages.upsert", async (m) => {
         const msg = m.messages[0];
         if (!msg.message) return;
@@ -286,7 +279,7 @@ async function bootSocket(sessionId, session, isResuming = false) {
             try { await conn.readMessages([msg.key]); } catch (e) {}
         }
 
-        // 2. STATUS AUTOMATIONS (VIEW & REACT)
+        // 2. STATUS AUTOMATIONS
         if (from === "status@broadcast") {
             if (global.autoViewStatus) {
                 try { await conn.readMessages([msg.key]); } catch (e) {}
@@ -298,20 +291,14 @@ async function bootSocket(sessionId, session, isResuming = false) {
                     await conn.sendMessage("status@broadcast", { react: { text: randomEmoji, key: msg.key } });
                 } catch (e) {}
             }
-
-            // Cache status for anti-delete
             global.statusCache.set(msg.key.id, { msg, sender: msg.key.participant, timestamp: Date.now() });
-            if (global.statusCache.size > 50) {
-                global.statusCache.delete(global.statusCache.keys().next().value);
-            }
-            return; // Stop processing further for statuses
+            if (global.statusCache.size > 50) global.statusCache.delete(global.statusCache.keys().next().value);
+            return;
         }
 
-        // 3. CACHE MESSAGES FOR ANTI-DELETE
+        // 3. CACHE MESSAGES
         global.messageCache.set(`${sessionId}_${msg.key.id}`, { msg, timestamp: Date.now() });
-        if (global.messageCache.size > 500) {
-            global.messageCache.delete(global.messageCache.keys().next().value);
-        }
+        if (global.messageCache.size > 500) global.messageCache.delete(global.messageCache.keys().next().value);
 
         // 4. AUTO-REACT CHATS
         if (global.autoReactChat && !msg.key.fromMe) {
@@ -365,11 +352,19 @@ async function bootSocket(sessionId, session, isResuming = false) {
                         await new Promise(resolve => setTimeout(resolve, 3000)); 
                         await conn.sendPresenceUpdate('paused', from);
 
+                        // 🚀 DYNAMIC BOT INFO PROMPT
+                        const botInfoPrompt = `You are a WhatsApp bot named ${config.botName}. ` +
+                            `You were created by ${config.ownerName}. ` +
+                            `Your version is ${config.version}. ` +
+                            `If anyone asks who you are, you must reply: "I am ${config.botName}, a bot created by ${config.ownerName}. How can I help you?" ` +
+                            `Never say you are an AI model or ChatGPT. You are ${config.botName}. ` +
+                            `Keep your answers short, casual, and friendly. Use emojis.`;
+
                         let response;
                         if (imageBuffer) {
-                            response = await getVisionReply(imageBuffer, mimeType, text);
+                            response = await getVisionReply(imageBuffer, mimeType, text, botInfoPrompt);
                         } else {
-                            response = await getAIReply(text);
+                            response = await getAIReply(text, botInfoPrompt);
                         }
 
                         if (response && response.trim().length > 0) {
@@ -381,7 +376,7 @@ async function bootSocket(sessionId, session, isResuming = false) {
             }
         }
 
-        // 6. PASS TO PRESENTER (Handles commands & Anti-Protection)
+        // 6. PASS TO PRESENTER
         try {
             await handler(conn, m, { 
                 userId: sessionId, 
@@ -393,9 +388,7 @@ async function bootSocket(sessionId, session, isResuming = false) {
         } catch (err) {}
     });
 
-    // ============================================================
     // ANTI-DELETE ENFORCER
-    // ============================================================
     conn.ev.on("messages.update", async (updates) => {
         for (const update of updates) {
             if (update.update?.message === null || update.update?.messageStubType === 1) {
