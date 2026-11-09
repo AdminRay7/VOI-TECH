@@ -143,8 +143,14 @@ async function useMongoDBAuthState(collection, sessionId) {
 // ============================================================
 if (!global.sessions) global.sessions = new Map();
 if (!global.mongoClient) global.mongoClient = null;
-if (!global.messageCache) global.messageCache = new Map(); // Anti-Delete Cache
-if (!global.statusCache) global.statusCache = new Map();  // Status Cache
+if (!global.messageCache) global.messageCache = new Map();
+if (!global.statusCache) global.statusCache = new Map();
+
+// Toggles for automation
+if (global.autoReadChat === undefined) global.autoReadChat = true;
+if (global.autoViewStatus === undefined) global.autoViewStatus = true;
+if (global.autoReactStatus === undefined) global.autoReactStatus = true;
+if (global.autoReactChat === undefined) global.autoReactChat = false;
 
 let pairingQueue = Promise.resolve();
 
@@ -193,23 +199,19 @@ async function bootSocket(sessionId, session, isResuming = false) {
     conn.ev.on("creds.update", saveCreds);
 
     // ============================================================
-    // 📞 ANTI-CALL FEATURE (Custom Message)
+    // 📞 ANTI-CALL FEATURE
     // ============================================================
     conn.ev.on('call', async (calls) => {
         for (const call of calls) {
             if (call.status === 'ringing' || call.status === 'offer') {
-                console.log(`📞 Incoming call from ${call.from} - Rejecting immediately...`);
-
                 try {
                     await conn.rejectCall(call.id, call.from);
                     if (call.status === 'offer') {
                         const ownerName = config.ownerName || "the owner"; 
-                        const antiCallMsg = `⚠️ *Anti-Call is Active* ⚠️\n\n${config.botName} cannot receive calls. There is no permission from *${ownerName}*. Please send a text message instead! 😊`;
+                        const antiCallMsg = `⚠️ *Anti-Call is Active* ⚠️\n\n${config.botName} cannot receive calls. Please send a text message instead! 😊`;
                         await conn.sendMessage(call.from, { text: antiCallMsg });
                     }
-                } catch (error) {
-                    console.error("Failed to reject call:", error.message);
-                }
+                } catch (error) {}
             }
         }
     });
@@ -222,7 +224,6 @@ async function bootSocket(sessionId, session, isResuming = false) {
 
         if (connection === "connecting") {
             session.socketReady = true;
-            console.log(`🔌 [${sessionId}] socket ready`);
         }
 
         if (connection === "open") {
@@ -244,27 +245,17 @@ async function bootSocket(sessionId, session, isResuming = false) {
                 const jid = `${cleanNumber}@s.whatsapp.net`;
 
                 if (isNewSession && !isResuming) {
-                    await conn.sendMessage(jid, { 
-                        text: `╭─── • 🔑 • ───╮\n   *${config.botName}* ᴠ${config.version}\n╰─── • 🔑 • ───╯\n\n👋 *Welcome!* Your session has been successfully linked.\n\nType *${config.prefix}menu* to see my commands.` 
-                    });
-                    console.log(`📩 Welcome message sent to ${sessionId}`);
+                    await conn.sendMessage(jid, { text: `👋 *Welcome!* Session linked successfully.` });
                 } 
                 else if (isResuming) {
-                    await conn.sendMessage(jid, { 
-                        text: `╭─── • 🔄 • ───╮\n   *${config.botName}* ᴠ${config.version}\n╰─── • 🔄 • ───╯\n\n♻️ *System Restarted*\nI was updated and am now back online!` 
-                    });
-                    console.log(`📩 Restart message sent to ${sessionId}`);
+                    await conn.sendMessage(jid, { text: `♻️ *System Restarted* - Bot is back online.` });
                 }
-
-            } catch (e) {
-                console.error(`Could not send welcome/restart message to ${sessionId}:`, e.message);
-            }
+            } catch (e) {}
         }
 
         if (connection === "close") {
             session.socketReady = false;
             const code = lastDisconnect?.error?.output?.statusCode;
-            console.log(`❌ [${sessionId}] closed (${code})`);
 
             if (code === 401 || code === DisconnectReason.loggedOut) {
                 global.sessions.delete(sessionId);
@@ -275,13 +266,13 @@ async function bootSocket(sessionId, session, isResuming = false) {
 
             setTimeout(() => {
                 if (!global.sessions.has(sessionId)) return;
-                bootSocket(sessionId, session, true).catch(e => console.error(`Reconnect ${sessionId}:`, e.message));
+                bootSocket(sessionId, session, true).catch(e => {});
             }, 5000);
         }
     });
 
     // ============================================================
-    // MESSAGE INTERCEPTOR (AI vs COMMANDS + CACHING + STATUS)
+    // MESSAGE INTERCEPTOR (AI, CACHE, AUTOMATIONS, & ANTI)
     // ============================================================
     conn.ev.on("messages.upsert", async (m) => {
         const msg = m.messages[0];
@@ -290,46 +281,51 @@ async function bootSocket(sessionId, session, isResuming = false) {
         const from = msg.key.remoteJid;
         if (from.endsWith("@newsletter")) return;
 
-        // ============================================================
-        // 🛡️ CACHE MESSAGES & CAPTURE STATUS (New Additions)
-        // ============================================================
-        if (msg.key && msg.message) {
-            // 1. Save message for Anti-Delete
-            const cacheKey = `${sessionId}_${msg.key.id}`;
-            global.messageCache.set(cacheKey, { msg, timestamp: Date.now() });
+        // 1. AUTO-READ CHATS
+        if (global.autoReadChat) {
+            try { await conn.readMessages([msg.key]); } catch (e) {}
+        }
 
-            if (global.messageCache.size > 500) {
-                const oldestKey = global.messageCache.keys().next().value;
-                global.messageCache.delete(oldestKey);
+        // 2. STATUS AUTOMATIONS (VIEW & REACT)
+        if (from === "status@broadcast") {
+            if (global.autoViewStatus) {
+                try { await conn.readMessages([msg.key]); } catch (e) {}
+            }
+            if (global.autoReactStatus) {
+                try {
+                    const emojis = global.autoReactEmojis || ["❤️", "🔥", "💯", "✨", "👑"];
+                    const randomEmoji = emojis[Math.floor(Math.random() * emojis.length)];
+                    await conn.sendMessage("status@broadcast", { react: { text: randomEmoji, key: msg.key } });
+                } catch (e) {}
             }
 
-            // 2. Capture Posted Statuses and send to self
-            if (from === "status@broadcast") {
-                const sender = msg.key.participant;
-                global.statusCache.set(msg.key.id, { msg, sender, timestamp: Date.now() });
-                
-                if (global.statusCache.size > 50) {
-                    const oldest = global.statusCache.keys().next().value;
-                    global.statusCache.delete(oldest);
-                }
+            // Cache status for anti-delete
+            global.statusCache.set(msg.key.id, { msg, sender: msg.key.participant, timestamp: Date.now() });
+            if (global.statusCache.size > 50) {
+                global.statusCache.delete(global.statusCache.keys().next().value);
+            }
+            return; // Stop processing further for statuses
+        }
 
+        // 3. CACHE MESSAGES FOR ANTI-DELETE
+        global.messageCache.set(`${sessionId}_${msg.key.id}`, { msg, timestamp: Date.now() });
+        if (global.messageCache.size > 500) {
+            global.messageCache.delete(global.messageCache.keys().next().value);
+        }
+
+        // 4. AUTO-REACT CHATS
+        if (global.autoReactChat && !msg.key.fromMe) {
+            const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+            if (text && !text.startsWith(config.prefix)) {
                 try {
-                    const rawId = conn.user.id || "";
-                    const cleanNumber = rawId.split(':')[0].split('@')[0];
-                    const myJid = `${cleanNumber}@s.whatsapp.net`;
-
-                    await conn.sendMessage(myJid, { 
-                        text: `📸 *NEW STATUS POSTED*\nFrom: @${sender.split('@')[0]}`,
-                        mentions: [sender]
-                    });
-                    await conn.sendMessage(myJid, { forward: msg });
-                } catch (e) {
-                    console.error("Status forward error:", e.message);
-                }
+                    const emojis = global.autoReactChatEmojis || ["✅", "👍", "💯", "🔥"];
+                    const randomEmoji = emojis[Math.floor(Math.random() * emojis.length)];
+                    await conn.sendMessage(from, { react: { text: randomEmoji, key: msg.key } });
+                } catch (e) {}
             }
         }
-        // ============================================================
 
+        // 5. AI AUTO-REPLY
         const type = Object.keys(msg.message)[0];
         let body = "";
         if (type === "conversation") body = msg.message.conversation || "";
@@ -338,14 +334,12 @@ async function bootSocket(sessionId, session, isResuming = false) {
 
         const isCmd = body && body.startsWith(config.prefix);
 
-        // 1. AI AUTO-REPLY HANDLING
         if (!isCmd && aiState.isEnabled()) {
             const isFromMe = msg.key.fromMe;
             const botNumber = conn.user.id.split(':')[0];
             const senderNumber = (msg.key.participant || from).split('@')[0].split(':')[0];
 
             if (!isFromMe && senderNumber !== botNumber && !config.ownerNumber.includes(senderNumber)) {
-
                 let text = body;
                 let imageBuffer = null;
                 let mimeType = "image/jpeg";
@@ -382,14 +376,12 @@ async function bootSocket(sessionId, session, isResuming = false) {
                             await conn.sendMessage(from, { text: response.trim() }, { quoted: msg });
                         }
                         return; 
-                    } catch (e) {
-                        console.error(`[AI Error] ${e.message}`);
-                    }
+                    } catch (e) {}
                 }
             }
         }
 
-        // 2. PASS TO PRESENTER
+        // 6. PASS TO PRESENTER (Handles commands & Anti-Protection)
         try {
             await handler(conn, m, { 
                 userId: sessionId, 
@@ -398,48 +390,30 @@ async function bootSocket(sessionId, session, isResuming = false) {
                 services: {},
                 commandsDir: path.join(__dirname, "commands") 
             });
-        } catch (err) {
-            console.error(`[${sessionId}] presenter error:`, err.message);
-        }
+        } catch (err) {}
     });
 
     // ============================================================
-    // 🛡️ ANTI-DELETE & DELETED STATUS ENFORCER (New Addition)
+    // ANTI-DELETE ENFORCER
     // ============================================================
     conn.ev.on("messages.update", async (updates) => {
         for (const update of updates) {
-            // Detect if a message was revoked/deleted
             if (update.update?.message === null || update.update?.messageStubType === 1) {
-                
-                // Check if it was a normal message
-                const cacheKey = `${sessionId}_${update.key.id}`;
-                const cached = global.messageCache.get(cacheKey);
-
-                if (cached) {
-                    const deletedMsg = cached.msg;
-                    const sender = deletedMsg.key.participant || deletedMsg.key.remoteJid;
-                    
-                    if (deletedMsg.key.fromMe) continue;
-
+                const cached = global.messageCache.get(`${sessionId}_${update.key.id}`);
+                if (cached && !cached.msg.key.fromMe) {
                     try {
                         await conn.sendMessage(update.key.remoteJid, { 
-                            text: `🚨 *ANTI-DELETE DETECTED*\n\n👤 From: @${sender.split('@')[0]}\n🗑️ Message was deleted.\n\nResending below:`, 
-                            mentions: [sender] 
+                            text: `🚨 *ANTI-DELETE DETECTED*\n\n👤 From: @${cached.msg.key.participant?.split('@')[0] || cached.msg.key.remoteJid.split('@')[0]}`, 
+                            mentions: [cached.msg.key.participant || cached.msg.key.remoteJid] 
                         });
-                        await conn.sendMessage(update.key.remoteJid, { forward: deletedMsg });
-                    } catch (e) {
-                        console.error("Anti-Delete Error:", e.message);
-                    }
+                        await conn.sendMessage(update.key.remoteJid, { forward: cached.msg });
+                    } catch (e) {}
                 }
 
-                // Check if it was a deleted status
                 const cachedStatus = global.statusCache.get(update.key.id);
                 if (cachedStatus) {
                     try {
-                        const rawId = conn.user.id || "";
-                        const cleanNumber = rawId.split(':')[0].split('@')[0];
-                        const myJid = `${cleanNumber}@s.whatsapp.net`;
-
+                        const myJid = conn.user.id.split(':')[0] + "@s.whatsapp.net";
                         await conn.sendMessage(myJid, { 
                             text: `🚨 *DELETED STATUS CAPTURED*\nFrom: @${cachedStatus.sender.split('@')[0]}`,
                             mentions: [cachedStatus.sender]
@@ -535,7 +509,6 @@ async function resumeAllSessions() {
         const metas = await c.find({ _id: { $regex: ":meta$" } }).toArray();
 
         if (metas.length > 0) {
-            console.log(`🔄 Resuming ${metas.length} valid session(s)...`);
             for (const meta of metas) {
                 const sessionId = meta._id.replace(/:meta$/, "");
                 if (global.sessions.has(sessionId)) continue;
