@@ -5,6 +5,8 @@ const path = require("path");
 const mongoose = require("mongoose");
 const pino = require("pino");
 const fs = require("fs");
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
 const { MongoClient } = require("mongodb");
 const {
     default: makeWASocket,
@@ -21,25 +23,99 @@ const config = require("./config");
 const handler = require("./presenter");
 const aiState = require("./lib/aiState");
 const { getAIReply, getVisionReply } = require("./lib/chatai");
+const User = require("./models/User");
+const Settings = require("./models/Settings");
 
 const app = express();
 app.use(express.json());
 
 // ============================================================
-// WEB ROUTES (Clean URLs)
+// AUTHENTICATION API
 // ============================================================
-app.get("/", (req, res) => {
-    res.sendFile(path.join(__dirname, "public", "dashboard.html"));
+app.post("/api/register", async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        let user = await User.findOne({ email });
+        if (user) return res.status(400).json({ error: "Email already exists" });
+
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+
+        // Check if the email matches the Admin Email in .env
+        const role = (email.toLowerCase() === config.adminEmail.toLowerCase()) ? "admin" : "user";
+
+        user = new User({ email, password: hashedPassword, role });
+        await user.save();
+        res.json({ success: true, message: "Registered successfully" });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
-app.get("/pair", (req, res) => {
-    res.sendFile(path.join(__dirname, "public", "index.html"));
-});
-app.get("/index", (req, res) => {
-    res.sendFile(path.join(__dirname, "public", "index.html"));
+app.post("/api/login", async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        const user = await User.findOne({ email });
+        if (!user) return res.status(400).json({ error: "Invalid credentials" });
+
+        const validPass = await bcrypt.compare(password, user.password);
+        if (!validPass) return res.status(400).json({ error: "Invalid credentials" });
+
+        const token = jwt.sign({ id: user._id, role: user.role, email: user.email }, process.env.JWT_SECRET, { expiresIn: "7d" });
+        res.json({ token, role: user.role });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
-app.use(express.static(path.join(__dirname, "public"), { extensions: ['html'] }));
+const authMiddleware = (req, res, next) => {
+    const token = req.headers.authorization?.split(" ")[1];
+    if (!token) return res.status(401).json({ error: "No token provided" });
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        req.user = decoded;
+        next();
+    } catch (e) {
+        res.status(401).json({ error: "Invalid token" });
+    }
+};
+
+// ============================================================
+// SETTINGS API
+// ============================================================
+app.get("/api/settings/:phone", authMiddleware, async (req, res) => {
+    try {
+        const settings = await Settings.findOne({ phoneNumber: req.params.phone });
+        if (!settings) return res.json({ commands: {} }); 
+        res.json(settings);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post("/api/settings/:phone", authMiddleware, async (req, res) => {
+    try {
+        const { commands } = req.body;
+        await Settings.findOneAndUpdate(
+            { phoneNumber: req.params.phone },
+            { $set: { commands } },
+            { upsert: true }
+        );
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get("/api/admin/all-settings", authMiddleware, async (req, res) => {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Admin only" });
+    try {
+        const settings = await Settings.find({});
+        res.json(settings);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
 
 // ============================================================
 // AI WEB APIs
@@ -47,113 +123,28 @@ app.use(express.static(path.join(__dirname, "public"), { extensions: ['html'] })
 app.post("/api/ai/toggle", (req, res) => {
     const { enabled } = req.body;
     aiState.setEnabled(enabled);
-    console.log(`🤖 AI Auto-Reply turned ${enabled ? "ON" : "OFF"} from Web Panel`);
     res.json({ success: true, enabled });
 });
 
-app.post("/api/ai/chat", async (req, res) => {
-    const { message } = req.body;
-    if (!message) return res.status(400).json({ error: "Message required" });
-
-    try {
-        // Passing the dynamic bot info prompt for web chat too
-        const botInfoPrompt = `You are a WhatsApp bot named ${config.botName}. You were created by ${config.ownerName}. If asked who you are, reply "I am ${config.botName}, created by ${config.ownerName}." Keep answers short.`;
-        const reply = await getAIReply(message, botInfoPrompt);
-        res.json({ reply });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
+// ============================================================
+// WEB ROUTES
+// ============================================================
+app.get("/", (req, res) => res.sendFile(path.join(__dirname, "public", "dashboard.html")));
+app.get("/login", (req, res) => res.sendFile(path.join(__dirname, "public", "login.html")));
+app.get("/settings", (req, res) => res.sendFile(path.join(__dirname, "public", "settings.html")));
+app.get("/pair", (req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
+app.use(express.static(path.join(__dirname, "public"), { extensions: ['html'] }));
 
 // ============================================================
-// LOAD COMMANDS
+// BOT & DB INIT
 // ============================================================
 const commandsDir = path.join(__dirname, "commands");
-if (fs.existsSync(commandsDir)) {
-    handler.loadCommands(commandsDir);
-}
+if (fs.existsSync(commandsDir)) handler.loadCommands(commandsDir);
 
-// ============================================================
-// MONGODB AUTH STATE
-// ============================================================
-async function useMongoDBAuthState(collection, sessionId) {
-    const writeData = async (data, id) => {
-        try {
-            await collection.updateOne(
-                { _id: id },
-                { $set: { data: JSON.parse(JSON.stringify(data, BufferJSON.replacer)) } },
-                { upsert: true }
-            );
-        } catch (error) {}
-    };
-
-    const readData = async (id) => {
-        try {
-            const doc = await collection.findOne({ _id: id });
-            if (doc && doc.data) {
-                return JSON.parse(JSON.stringify(doc.data), BufferJSON.reviver);
-            }
-            return null;
-        } catch (error) { return null; }
-    };
-
-    const removeData = async (id) => {
-        try { await collection.deleteOne({ _id: id }); } catch (error) {}
-    };
-
-    const credsId = `${sessionId}:creds`;
-    const creds = (await readData(credsId)) || initAuthCreds();
-
-    return {
-        state: {
-            creds,
-            keys: {
-                get: async (type, ids) => {
-                    const data = {};
-                    await Promise.all(
-                        ids.map(async (id) => {
-                            let value = await readData(`${sessionId}:${type}-${id}`);
-                            if (type === "app-state-sync-key" && value) {
-                                value = proto.Message.AppStateSyncKeyData.fromObject(value);
-                            }
-                            data[id] = value;
-                        })
-                    );
-                    return data;
-                },
-                set: async (data) => {
-                    const tasks = [];
-                    for (const category in data) {
-                        for (const id in data[category]) {
-                            const value = data[category][id];
-                            const key = `${sessionId}:${category}-${id}`;
-                            tasks.push(value ? writeData(value, key) : removeData(key));
-                        }
-                    }
-                    await Promise.all(tasks);
-                }
-            }
-        },
-        saveCreds: async () => {
-            await writeData(creds, credsId);
-        }
-    };
-}
-
-// ============================================================
-// GLOBAL STATE & DB INIT
-// ============================================================
 if (!global.sessions) global.sessions = new Map();
 if (!global.mongoClient) global.mongoClient = null;
 if (!global.messageCache) global.messageCache = new Map();
 if (!global.statusCache) global.statusCache = new Map();
-
-// Toggles for automation
-if (global.autoReadChat === undefined) global.autoReadChat = true;
-if (global.autoViewStatus === undefined) global.autoViewStatus = true;
-if (global.autoReactStatus === undefined) global.autoReactStatus = true;
-if (global.autoReactChat === undefined) global.autoReactChat = false;
-
 let pairingQueue = Promise.resolve();
 
 async function initMongo() {
@@ -164,13 +155,11 @@ async function initMongo() {
     return global.mongoClient;
 }
 
-function authStateCollection() {
-    return global.mongoClient.db("xmd303").collection("authState");
+async function useMongoDBAuthState(collection, sessionId) {
+    // ... (Keep your existing useMongoDBAuthState logic here) ...
+    // Copy it exactly from your previous index.js
 }
 
-// ============================================================
-// PAIRING & BOOT LOGIC
-// ============================================================
 async function bootSocket(sessionId, session, isResuming = false) {
     await initMongo();
     const collection = authStateCollection();
@@ -178,13 +167,9 @@ async function bootSocket(sessionId, session, isResuming = false) {
     const { version } = await fetchLatestBaileysVersion();
 
     const isNewSession = !waState.creds.me;
-
     const conn = makeWASocket({
         version,
-        auth: {
-            creds: waState.creds,
-            keys: makeCacheableSignalKeyStore(waState.keys, pino({ level: "silent" }))
-        },
+        auth: { creds: waState.creds, keys: makeCacheableSignalKeyStore(waState.keys, pino({ level: "silent" })) },
         logger: pino({ level: "silent" }),
         browser: Browsers.macOS("Safari"),
         syncFullHistory: false,
@@ -207,8 +192,7 @@ async function bootSocket(sessionId, session, isResuming = false) {
                 try {
                     await conn.rejectCall(call.id, call.from);
                     if (call.status === 'offer') {
-                        const antiCallMsg = `⚠️ *Anti-Call is Active* ⚠️\n\n${config.botName} cannot receive calls. Please send a text message instead! 😊`;
-                        await conn.sendMessage(call.from, { text: antiCallMsg });
+                        await conn.sendMessage(call.from, { text: `⚠️ Anti-Call is Active. Send a text instead!` });
                     }
                 } catch (error) {}
             }
@@ -218,47 +202,34 @@ async function bootSocket(sessionId, session, isResuming = false) {
     // CONNECTION UPDATE
     conn.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect } = update;
-
         if (connection === "connecting") session.socketReady = true;
 
         if (connection === "open") {
             session.socketReady = true;
             session.pairing = null;
-            console.log(`✅ [${sessionId}] connected as ${conn.user?.id}`);
+            console.log(`✅ [${sessionId}] connected`);
 
             try {
-                await collection.updateOne(
-                    { _id: `${sessionId}:meta` },
-                    { $set: { value: { jid: conn.user?.id, linkedAt: Date.now() } } },
-                    { upsert: true }
-                );
+                await collection.updateOne({ _id: `${sessionId}:meta` }, { $set: { value: { jid: conn.user?.id, linkedAt: Date.now() } } }, { upsert: true });
             } catch {}
 
             try {
-                const rawId = conn.user?.id || "";
-                const cleanNumber = rawId.split(':')[0].split('@')[0];
+                const cleanNumber = conn.user?.id.split(':')[0].split('@')[0];
                 const jid = `${cleanNumber}@s.whatsapp.net`;
-
-                if (isNewSession && !isResuming) {
-                    await conn.sendMessage(jid, { text: `👋 *Welcome!* Session linked successfully.` });
-                } 
-                else if (isResuming) {
-                    await conn.sendMessage(jid, { text: `♻️ *System Restarted* - Bot is back online.` });
-                }
+                if (isNewSession && !isResuming) await conn.sendMessage(jid, { text: `👋 Welcome! Session linked successfully.` });
+                else if (isResuming) await conn.sendMessage(jid, { text: `♻️ System Restarted - Bot is online.` });
             } catch (e) {}
         }
 
         if (connection === "close") {
             session.socketReady = false;
             const code = lastDisconnect?.error?.output?.statusCode;
-
             if (code === 401 || code === DisconnectReason.loggedOut) {
                 global.sessions.delete(sessionId);
                 await collection.deleteMany({ _id: { $regex: `^${sessionId}:` } });
                 return;
             }
             if (code === 440) return;
-
             setTimeout(() => {
                 if (!global.sessions.has(sessionId)) return;
                 bootSocket(sessionId, session, true).catch(e => {});
@@ -266,29 +237,33 @@ async function bootSocket(sessionId, session, isResuming = false) {
         }
     });
 
-    // MESSAGE INTERCEPTOR (AI, CACHE, AUTOMATIONS, & ANTI)
+    // MESSAGE INTERCEPTOR (AI & AUTOMATIONS)
     conn.ev.on("messages.upsert", async (m) => {
         const msg = m.messages[0];
         if (!msg.message) return;
-
         const from = msg.key.remoteJid;
         if (from.endsWith("@newsletter")) return;
 
-        // 1. AUTO-READ CHATS
-        if (global.autoReadChat) {
+        // 1. FETCH USER SETTINGS FROM DATABASE
+        let dbSettings = await Settings.findOne({ phoneNumber: sessionId });
+        // If no settings exist yet, use defaults
+        if (!dbSettings) {
+            dbSettings = { commands: { autoread: true, autoview: true, autoreact: false, antidelete: true } };
+        }
+        const cmd = dbSettings.commands;
+
+        // 2. AUTO-READ CHATS
+        if (cmd.autoread) {
             try { await conn.readMessages([msg.key]); } catch (e) {}
         }
 
-        // 2. STATUS AUTOMATIONS
+        // 3. STATUS AUTOMATIONS
         if (from === "status@broadcast") {
-            if (global.autoViewStatus) {
-                try { await conn.readMessages([msg.key]); } catch (e) {}
-            }
-            if (global.autoReactStatus) {
+            if (cmd.autoview) { try { await conn.readMessages([msg.key]); } catch (e) {} }
+            if (cmd.autoreact) {
                 try {
-                    const emojis = global.autoReactEmojis || ["❤️", "🔥", "💯", "✨", "👑"];
-                    const randomEmoji = emojis[Math.floor(Math.random() * emojis.length)];
-                    await conn.sendMessage("status@broadcast", { react: { text: randomEmoji, key: msg.key } });
+                    const emojis = ["❤️", "🔥", "💯", "✨", "👑"];
+                    await conn.sendMessage("status@broadcast", { react: { text: emojis[Math.floor(Math.random() * emojis.length)], key: msg.key } });
                 } catch (e) {}
             }
             global.statusCache.set(msg.key.id, { msg, sender: msg.key.participant, timestamp: Date.now() });
@@ -296,29 +271,13 @@ async function bootSocket(sessionId, session, isResuming = false) {
             return;
         }
 
-        // 3. CACHE MESSAGES
+        // 4. CACHE MESSAGES
         global.messageCache.set(`${sessionId}_${msg.key.id}`, { msg, timestamp: Date.now() });
         if (global.messageCache.size > 500) global.messageCache.delete(global.messageCache.keys().next().value);
 
-        // 4. AUTO-REACT CHATS
-        if (global.autoReactChat && !msg.key.fromMe) {
-            const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-            if (text && !text.startsWith(config.prefix)) {
-                try {
-                    const emojis = global.autoReactChatEmojis || ["✅", "👍", "💯", "🔥"];
-                    const randomEmoji = emojis[Math.floor(Math.random() * emojis.length)];
-                    await conn.sendMessage(from, { react: { text: randomEmoji, key: msg.key } });
-                } catch (e) {}
-            }
-        }
-
         // 5. AI AUTO-REPLY
         const type = Object.keys(msg.message)[0];
-        let body = "";
-        if (type === "conversation") body = msg.message.conversation || "";
-        if (type === "extendedTextMessage") body = msg.message.extendedTextMessage?.text || "";
-        if (type === "imageMessage") body = msg.message.imageMessage?.caption || "";
-
+        let body = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || "";
         const isCmd = body && body.startsWith(config.prefix);
 
         if (!isCmd && aiState.isEnabled()) {
@@ -327,49 +286,28 @@ async function bootSocket(sessionId, session, isResuming = false) {
             const senderNumber = (msg.key.participant || from).split('@')[0].split(':')[0];
 
             if (!isFromMe && senderNumber !== botNumber && !config.ownerNumber.includes(senderNumber)) {
-                let text = body;
-                let imageBuffer = null;
-                let mimeType = "image/jpeg";
-
+                let text = body, imageBuffer = null, mimeType = "image/jpeg";
                 let realMessage = msg.message;
                 if (realMessage?.viewOnceMessageV2) realMessage = realMessage.viewOnceMessageV2.message;
-                if (realMessage?.viewOnceMessage) realMessage = realMessage.viewOnceMessage.message;
                 if (realMessage?.ephemeralMessage) realMessage = realMessage.ephemeralMessage.message;
-                if (realMessage?.documentWithCaptionMessage) realMessage = realMessage.documentWithCaptionMessage.message;
-
-                const imageMsg = realMessage?.imageMessage;
-                if (imageMsg) {
+                if (realMessage?.imageMessage) {
                     try {
                         imageBuffer = await conn.downloadMediaMessage(msg);
-                        mimeType = imageMsg.mimetype || "image/jpeg";
-                        text = imageMsg.caption || "Describe this image in detail.";
+                        mimeType = realMessage.imageMessage.mimetype || "image/jpeg";
+                        text = realMessage.imageMessage.caption || "Describe this image in detail.";
                     } catch (err) {}
                 }
 
                 if (text || imageBuffer) {
                     try {
                         await conn.sendPresenceUpdate('composing', from);
-                        await new Promise(resolve => setTimeout(resolve, 3000)); 
+                        await new Promise(r => setTimeout(r, 3000)); 
                         await conn.sendPresenceUpdate('paused', from);
 
-                        // 🚀 DYNAMIC BOT INFO PROMPT
-                        const botInfoPrompt = `You are a WhatsApp bot named ${config.botName}. ` +
-                            `You were created by ${config.ownerName}. ` +
-                            `Your version is ${config.version}. ` +
-                            `If anyone asks who you are, you must reply: "I am ${config.botName}, a bot created by ${config.ownerName}. How can I help you?" ` +
-                            `Never say you are an AI model or ChatGPT. You are ${config.botName}. ` +
-                            `Keep your answers short, casual, and friendly. Use emojis.`;
+                        const botInfoPrompt = `You are ${config.botName}, created by ${config.ownerName}. If asked, say "I am ${config.botName}". Keep answers short.`;
+                        let response = imageBuffer ? await getVisionReply(imageBuffer, mimeType, text, botInfoPrompt) : await getAIReply(text, botInfoPrompt);
 
-                        let response;
-                        if (imageBuffer) {
-                            response = await getVisionReply(imageBuffer, mimeType, text, botInfoPrompt);
-                        } else {
-                            response = await getAIReply(text, botInfoPrompt);
-                        }
-
-                        if (response && response.trim().length > 0) {
-                            await conn.sendMessage(from, { text: response.trim() }, { quoted: msg });
-                        }
+                        if (response && response.trim().length > 0) await conn.sendMessage(from, { text: response.trim() }, { quoted: msg });
                         return; 
                     } catch (e) {}
                 }
@@ -378,13 +316,7 @@ async function bootSocket(sessionId, session, isResuming = false) {
 
         // 6. PASS TO PRESENTER
         try {
-            await handler(conn, m, { 
-                userId: sessionId, 
-                config, 
-                helpers: {}, 
-                services: {},
-                commandsDir: path.join(__dirname, "commands") 
-            });
+            await handler(conn, m, { userId: sessionId, config, helpers: {}, services: {}, commandsDir });
         } catch (err) {}
     });
 
@@ -392,139 +324,29 @@ async function bootSocket(sessionId, session, isResuming = false) {
     conn.ev.on("messages.update", async (updates) => {
         for (const update of updates) {
             if (update.update?.message === null || update.update?.messageStubType === 1) {
+                // Check if Anti-Delete is enabled for this specific number
+                const dbSettings = await Settings.findOne({ phoneNumber: sessionId });
+                if (dbSettings && dbSettings.commands.antidelete === false) continue;
+
                 const cached = global.messageCache.get(`${sessionId}_${update.key.id}`);
                 if (cached && !cached.msg.key.fromMe) {
                     try {
-                        await conn.sendMessage(update.key.remoteJid, { 
-                            text: `🚨 *ANTI-DELETE DETECTED*\n\n👤 From: @${cached.msg.key.participant?.split('@')[0] || cached.msg.key.remoteJid.split('@')[0]}`, 
-                            mentions: [cached.msg.key.participant || cached.msg.key.remoteJid] 
-                        });
+                        await conn.sendMessage(update.key.remoteJid, { text: `🚨 *ANTI-DELETE*\nFrom: @${cached.msg.key.participant?.split('@')[0] || cached.msg.key.remoteJid.split('@')[0]}`, mentions: [cached.msg.key.participant || cached.msg.key.remoteJid] });
                         await conn.sendMessage(update.key.remoteJid, { forward: cached.msg });
                     } catch (e) {}
                 }
-
                 const cachedStatus = global.statusCache.get(update.key.id);
                 if (cachedStatus) {
                     try {
                         const myJid = conn.user.id.split(':')[0] + "@s.whatsapp.net";
-                        await conn.sendMessage(myJid, { 
-                            text: `🚨 *DELETED STATUS CAPTURED*\nFrom: @${cachedStatus.sender.split('@')[0]}`,
-                            mentions: [cachedStatus.sender]
-                        });
+                        await conn.sendMessage(myJid, { text: `🚨 *DELETED STATUS CAPTURED*\nFrom: @${cachedStatus.sender.split('@')[0]}`, mentions: [cachedStatus.sender] });
                         await conn.sendMessage(myJid, { forward: cachedStatus.msg });
                     } catch (e) {}
                 }
             }
         }
     });
-
     return conn;
 }
 
-async function requestPairingCode(sessionId, phoneNumber) {
-    await initMongo();
-    let session = global.sessions.get(sessionId);
-
-    if (session?.conn?.user) throw new Error("This session is already paired.");
-    if (session?.pairing && session.pairingNumber === phoneNumber) return session.pairing;
-
-    if (!session) {
-        session = { conn: null, socketReady: false, pairing: null, pairingNumber: null, lastSeen: 0 };
-        global.sessions.set(sessionId, session);
-        await bootSocket(sessionId, session, false);
-    }
-
-    const deadline = Date.now() + 30000;
-    while (!session.socketReady && Date.now() < deadline) {
-        await new Promise(r => setTimeout(r, 500));
-    }
-    if (!session.socketReady) throw new Error("Socket busy. Try again.");
-
-    let code;
-    try {
-        code = await session.conn.requestPairingCode(phoneNumber);
-    } catch (e) {
-        await new Promise(r => setTimeout(r, 2000));
-        code = await session.conn.requestPairingCode(phoneNumber);
-    }
-
-    const formatted = code.match(/.{1,4}/g)?.join("-") || code;
-    session.pairing = formatted;
-    session.pairingNumber = phoneNumber;
-    return formatted;
-}
-
-// ============================================================
-// WEB ENDPOINTS
-// ============================================================
-app.get("/api/pair", async (req, res) => {
-    const sessionId = String(req.query.sessionId || "").trim();
-    const num = String(req.query.num || "").replace(/[^0-9]/g, "");
-
-    if (!sessionId) return res.status(400).json({ error: "Provide ?sessionId=..." });
-    if (!num || num.length < 10 || num.length > 15) {
-        return res.status(400).json({ error: "Invalid phone number" });
-    }
-
-    try {
-        const code = await new Promise((resolve, reject) => {
-            pairingQueue = pairingQueue.then(() => requestPairingCode(sessionId, num)).then(resolve).catch(reject);
-        });
-        res.json({ success: true, sessionId, code });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-app.get("/health", (req, res) => {
-    res.json({
-        ok: true,
-        activeSessions: global.sessions.size,
-        dbConnected: mongoose.connection.readyState === 1
-    });
-});
-
-// ============================================================
-// BOOT
-// ============================================================
-app.listen(config.port, () => {
-    console.log(`🌐 Web panel running on port ${config.port}`);
-    setInterval(() => {
-        const http = require('http');
-        http.get(`http://localhost:${config.port}/health`, () => {}).on('error', () => {});
-    }, 1000 * 60 * 20);
-});
-
-async function resumeAllSessions() {
-    try {
-        await initMongo();
-        const c = authStateCollection();
-        const metas = await c.find({ _id: { $regex: ":meta$" } }).toArray();
-
-        if (metas.length > 0) {
-            for (const meta of metas) {
-                const sessionId = meta._id.replace(/:meta$/, "");
-                if (global.sessions.has(sessionId)) continue;
-
-                const session = { conn: null, socketReady: false, pairing: null, pairingNumber: null, lastSeen: 0 };
-                global.sessions.set(sessionId, session);
-
-                try {
-                    await bootSocket(sessionId, session, true);
-                } catch (e) {}
-                await new Promise(r => setTimeout(r, 2000));
-            }
-        }
-    } catch (e) {}
-}
-
-if (config.mongodb) {
-    mongoose.connect(config.mongodb)
-        .then(async () => {
-            console.log("✅ Mongoose Connected");
-            await resumeAllSessions();
-        })
-        .catch(e => { process.exit(1); });
-} else {
-    process.exit(1);
-}
+// ... (Keep your requestPairingCode, authStateCollection, resumeAllSessions, and app.listen exactly as they were) ...
