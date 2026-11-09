@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Settings - 303-XMD</title>
+  <link rel="stylesheet" href="/sidebar.css">
+  <style>
+    body { background: #0a0a0f; color: white; font-family: 'Inter', sans-serif; margin: 0; padding: 20px; }
+    .container { max-width: 800px; margin: 60px auto; background: rgba(20,20,30,0.8); padding: 30px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); }
+    .toggle-row { display: flex; justify-content: space-between; padding: 15px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+    .switch { position: relative; display: inline-block; width: 50px; height: 24px; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #333; transition: .4s; border-radius: 24px; }
+    .slider:before { position: absolute; content: ""; height: 16px; width: 16px; left: 4px; bottom: 4px; background-color: white; transition: .4s; border-radius: 50%; }
+    input:checked + .slider { background-color: #6366f1; }
+    input:checked + .slider:before { transform: translateX(26px); }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <h2>Command Settings</h2>
+    <p style="color:#8b8ba8; font-size:14px;">Toggle features for your linked number.</p>
+    <input type="text" id="phoneNum" placeholder="Enter Linked Phone Number (e.g. 2547...)" style="width:100%; padding:10px; background:#000; border:1px solid #333; color:white; margin-bottom:20px;">
+    
+    <div id="settingsList" style="display:none;">
+      <div class="toggle-row"><span>Auto Read Chats</span><label class="switch"><input type="checkbox" id="autoread"><span class="slider"></span></label></div>
+      <div class="toggle-row"><span>Auto View Status</span><label class="switch"><input type="checkbox" id="autoview"><span class="slider"></span></label></div>
+      <div class="toggle-row"><span>Auto React Status</span><label class="switch"><input type="checkbox" id="autoreact"><span class="slider"></span></label></div>
+      <div class="toggle-row"><span>Anti-Delete</span><label class="switch"><input type="checkbox" id="antidelete"><span class="slider"></span></label></div>
+      <div class="toggle-row"><span>Anti-Link (Group)</span><label class="switch"><input type="checkbox" id="antilink"><span class="slider"></span></label></div>
+      <div class="toggle-row"><span>Anti-Media (Group)</span><label class="switch"><input type="checkbox" id="antimedia"><span class="slider"></span></label></div>
+      <div class="toggle-row"><span>Anti-Sticker (Group)</span><label class="switch"><input type="checkbox" id="antisticker"><span class="slider"></span></label></div>
+      
+      <button onclick="saveSettings()" style="width:100%; padding:15px; margin-top:20px; background:#6366f1; border:none; border-radius:8px; color:white; font-weight:bold; cursor:pointer;">Save Settings</button>
+    </div>
+  </div>
+
+  <script src="/sidebar.js"></script>
+  <script>
+    const token = localStorage.getItem("token");
+    if (!token) window.location.href = "/login";
+
+    const phoneInput = document.getElementById("phoneNum");
+    
+    phoneInput.addEventListener("change", async () => {
+      const phone = phoneInput.value.replace(/\D/g, "");
+      if (phone.length < 10) return;
+      
+      document.getElementById("settingsList").style.display = "block";
+      
+      const res = await fetch(`/api/settings/${phone}`, {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      const data = await res.json();
+      
+      const c = data.commands || {};
+      document.getElementById("autoread").checked = c.autoread ?? true;
+      document.getElementById("autoview").checked = c.autoview ?? true;
+      document.getElementById("autoreact").checked = c.autoreact ?? false;
+      document.getElementById("antidelete").checked = c.antidelete ?? true;
+      document.getElementById("antilink").checked = c.antilink ?? false;
+      document.getElementById("antimedia").checked = c.antimedia ?? false;
+      document.getElementById("antisticker").checked = c.antisticker ?? false;
+    });
+
+    async function saveSettings() {
+      const phone = phoneInput.value.replace(/\D/g, "");
+      if (!phone) return alert("Enter a number");
+      
+      const commands = {
+        autoread: document.getElementById("autoread").checked,
+        autoview: document.getElementById("autoview").checked,
+        autoreact: document.getElementById("autoreact").checked,
+        antidelete: document.getElementById("antidelete").checked,
+        antilink: document.getElementById("antilink").checked,
+        antimedia: document.getElementById("antimedia").checked,
+        antisticker: document.getElementById("antisticker").checked
+      };
+
+      const res = await fetch(`/api/settings/${phone}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        body: JSON.stringify({ commands })
+      });
+      
+      if (res.ok) alert("Settings saved successfully!");
+      else alert("Failed to save settings");
+    }
+  </script>
+</body>
+</html>
