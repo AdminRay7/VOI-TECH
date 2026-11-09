@@ -25,7 +25,6 @@ function loadCommands(dir) {
         try {
             entries = fs.readdirSync(current, { withFileTypes: true });
         } catch (e) {
-            console.error(`⚠️ readdir failed ${current}:`, e.message);
             return;
         }
         for (const entry of entries) {
@@ -50,7 +49,6 @@ function registerCommand(filePath) {
         delete require.cache[require.resolve(filePath)];
         mod = require(filePath);
     } catch (e) {
-        console.error(`⚠️ Failed to require ${filePath}:`, e.message);
         return;
     }
 
@@ -61,16 +59,9 @@ function registerCommand(filePath) {
         ...(Array.isArray(mod.aliases) ? mod.aliases : [])
     ].filter(Boolean).map(n => String(n).toLowerCase().trim()).filter(Boolean);
 
-    if (names.length === 0) {
-        console.warn(`⚠️ ${filePath} has no name/aliases — skipped`);
-        return;
-    }
+    if (names.length === 0) return;
 
     for (const name of names) {
-        if (commandCache.has(name)) {
-            const prev = commandOwners.get(name);
-            console.warn(`⚠️ Duplicate command "${name}" — ${filePath} overwrites ${prev}`);
-        }
         commandCache.set(name, mod);
         commandOwners.set(name, filePath);
     }
@@ -105,7 +96,7 @@ async function handler(conn, m, options = {}) {
         if (!loadInFlight) {
             loadInFlight = Promise.resolve().then(() => loadCommands(commandsDir));
         }
-        try { await loadInFlight; } catch (e) { console.error("[presenter] autoload failed:", e.message); }
+        try { await loadInFlight; } catch (e) { }
     }
 
     const commands = options.commands || commandCache;
@@ -120,9 +111,7 @@ async function handler(conn, m, options = {}) {
             try {
                 const dup = await services.dedupe.isDuplicate(msg.key.id, { sessionId: userId });
                 if (dup) return;
-            } catch (e) {
-                console.error("[presenter] dedupe error:", e.message);
-            }
+            } catch (e) {}
         }
 
         try { services.watchdog?.heartbeat?.(userId); } catch {}
@@ -144,16 +133,6 @@ async function handler(conn, m, options = {}) {
         const args     = isCmd ? body.trim().split(/\s+/).slice(1) : [];
         const isOwner  = isOwnerCheck(sender, msg, config);
 
-        const privateMode = config.privateMode;
-        let canUse = true;
-        if (privateMode && !isOwner) {
-            if (privateMode === true || privateMode === "dm") {
-                canUse = !isGroup;
-            } else if (privateMode === "all" || privateMode === "owner") {
-                canUse = false;
-            }
-        }
-
         // Get group metadata for admin checks
         let isAdmin = false;
         if (isGroup) {
@@ -168,35 +147,47 @@ async function handler(conn, m, options = {}) {
             conn, msg, from, sender, pushname,
             userId, config, body, args, command, prefix,
             isGroup, isChannel, isCmd, isOwner, isAdmin,
-            isPrivateMode: !!privateMode,
-            canUse,
             fancy, 
             type,
             normalized,
             reply: async (text, extra = {}) => {
                 try { return await conn.sendMessage(from, { text, ...extra }, { quoted: msg }); }
-                catch (e) { console.error("[presenter] reply failed:", e.message); }
+                catch (e) {}
             },
             send: async (payload, extra = {}) => {
                 try { return await conn.sendMessage(from, payload, { quoted: msg, ...extra }); }
-                catch (e) { console.error("[presenter] send failed:", e.message); }
+                catch (e) {}
             },
         };
 
         // ============================================================
-        // 🛡️ ANTI-PROTECTION ENFORCEMENT (Auto-Delete)
+        // 🛡️ ANTI-PROTECTION ENFORCER (Auto-Delete)
         // ============================================================
         if (isGroup && !isAdmin && !isOwner) {
+            let shouldDelete = false;
+            let warnMsg = "";
+
             // Anti-Link
             if (global.antiLinkGroups?.has(from) && body) {
                 const linkRegex = /chat\.whatsapp\.com|https?:\/\/[^\s]+/gi;
                 if (linkRegex.test(body)) {
-                    try {
-                        await conn.sendMessage(from, { delete: msg.key });
-                        await conn.sendMessage(from, { text: `⚠️ @${sender.split('@')[0]} links are not allowed here!`, mentions: [sender] });
-                        return; // Stop processing further
-                    } catch (e) { console.error("Anti-Link delete failed:", e.message); }
+                    shouldDelete = true;
+                    warnMsg = `⚠️ @${sender.split('@')[0]} links are not allowed here!`;
                 }
+            }
+
+            // Anti-Media
+            if (global.antiMediaGroups?.has(from)) {
+                if (["imageMessage", "videoMessage", "audioMessage", "documentMessage"].includes(type)) {
+                    shouldDelete = true;
+                    warnMsg = `⚠️ @${sender.split('@')[0]} media is not allowed here!`;
+                }
+            }
+
+            // Anti-Sticker
+            if (global.antiStickerGroups?.has(from) && type === "stickerMessage") {
+                shouldDelete = true;
+                warnMsg = `⚠️ @${sender.split('@')[0]} stickers are not allowed here!`;
             }
 
             // Anti-Spam
@@ -205,57 +196,45 @@ async function handler(conn, m, options = {}) {
                 const spamKey = `${from}_${sender}`;
                 const now = Date.now();
                 let userSpam = global.spamTracker.get(spamKey) || [];
-                userSpam = userSpam.filter(time => now - time < 5000); // 5 second window
+                userSpam = userSpam.filter(time => now - time < 5000); 
                 userSpam.push(now);
                 global.spamTracker.set(spamKey, userSpam);
 
-                if (userSpam.length > 5) { // More than 5 messages in 5 seconds
-                    try {
-                        await conn.sendMessage(from, { delete: msg.key });
-                        await conn.sendMessage(from, { text: `🚨 @${sender.split('@')[0]} kicked for spamming!`, mentions: [sender] });
-                        await conn.groupParticipantsUpdate(from, [sender], "remove");
-                        global.spamTracker.delete(spamKey);
-                        return; // Stop processing further
-                    } catch (e) { console.error("Anti-Spam kick failed:", e.message); }
+                if (userSpam.length > 5) { 
+                    shouldDelete = true;
+                    warnMsg = `🚨 @${sender.split('@')[0]} kicked for spamming!`;
                 }
+            }
+
+            if (shouldDelete) {
+                try {
+                    await conn.sendMessage(from, { delete: msg.key });
+                    if (warnMsg.includes("kicked")) {
+                        await conn.sendMessage(from, { text: warnMsg, mentions: [sender] });
+                        await conn.groupParticipantsUpdate(from, [sender], "remove");
+                        if (global.spamTracker) global.spamTracker.delete(`${from}_${sender}`);
+                    } else {
+                        await conn.sendMessage(from, { text: warnMsg, mentions: [sender] });
+                    }
+                    return; // Stop processing further
+                } catch (e) { console.error("Anti-Protection delete failed:", e.message); }
             }
         }
 
         try {
             if (await routeButtons(conn, msg, ctx, commands, services)) return;
-        } catch (e) { console.error("[presenter] routeButtons fatal:", e?.message || e); }
+        } catch (e) { }
 
         if (!isCmd) {
             try {
                 if (await routeGameInput(ctx, services)) return;
-            } catch (e) { console.error("[presenter] routeGameInput fatal:", e?.message || e); }
-        }
-
-        // AI AUTO-REPLY TRIGGER
-        const isImage = !!normalized.imageMessage;
-
-        if (!isCmd && (body || isImage)) {
-            try {
-                if (await routeAutoReply(conn, msg, ctx, commands)) return;
-            } catch (e) { console.error("[presenter] routeAutoReply fatal:", e?.message || e); }
+            } catch (e) { }
         }
 
         if (!isCmd || !command) return;
 
         const mod = commands.get(command);
-        if (!mod || typeof mod.execute !== "function") {
-            if (config.debugUnknownCommands) {
-                console.warn(`[presenter] unknown command "${command}"`);
-            }
-            return;
-        }
-
-        if (!canUse) {
-            if (config.privateModeReply !== false) {
-                await ctx.reply("🔒 Private mode is on. Commands are restricted.");
-            }
-            return;
-        }
+        if (!mod || typeof mod.execute !== "function") return;
 
         if (mod.ownerOnly === true && !isOwner) {
             await ctx.reply("❌ Owner only.");
@@ -291,9 +270,6 @@ function extractBody(normalized, type) {
         case "imageMessage":        return normalized.imageMessage?.caption || "";
         case "videoMessage":        return normalized.videoMessage?.caption || "";
         case "documentMessage":     return normalized.documentMessage?.caption || "";
-        case "buttonsResponseMessage": return normalized.buttonsResponseMessage?.selectedDisplayText || "";
-        case "listResponseMessage": return normalized.listResponseMessage?.title || "";
-        case "templateButtonReplyMessage": return normalized.templateButtonReplyMessage?.selectedDisplayText || "";
         default:                    return "";
     }
 }
@@ -322,55 +298,17 @@ async function routeButtons(conn, msg, ctx, commands, services) {
         const name = buttonId.slice("run_command:".length).trim().toLowerCase();
         const mod = commands.get(name);
         if (!mod || typeof mod.execute !== "function") return true;
-        if (!ctx.canUse) { await ctx.reply("🔒 Private mode is on."); return true; }
         if (mod.ownerOnly === true && !ctx.isOwner) { await ctx.reply("❌ Owner only."); return true; }
         try {
             await mod.execute(conn, msg, [], { ...ctx, command: name, args: [], body: `${ctx.prefix}${name}` });
-        } catch (e) { console.error(`Button-run "${name}" error:`, e?.stack || e?.message || e); }
+        } catch (e) { }
         return true;
-    }
-    if (buttonId.startsWith("game:") && services.gameEngine?.sendInput) {
-        const parts = buttonId.split(":");
-        const input = parts[2];
-        try {
-            const handled = await services.gameEngine.sendInput(ctx.userId, ctx.from, ctx.sender, input);
-            if (handled) return true;
-        } catch (e) { console.error("game sendInput error:", e.message); }
-    }
-    const seen = new Set();
-    for (const [, mod] of commands) {
-        if (seen.has(mod)) continue;
-        seen.add(mod);
-        if (typeof mod.handleButton !== "function") continue;
-        try {
-            const handled = await mod.handleButton(conn, msg, buttonId, ctx);
-            if (handled === true) return true;
-        } catch (e) { console.error("handleButton error:", e.message); }
     }
     return false;
 }
 
 async function routeGameInput(ctx, services) {
-    const { body, from, sender, userId } = ctx;
-    if (!body) return false;
-    if (!services.gameEngine?.hasActiveGame || !services.gameEngine?.sendInput) return false;
-    let active = false;
-    try { active = services.gameEngine.hasActiveGame(userId, from, sender); } catch { return false; }
-    if (!active) return false;
-    const trimmed = body.trim().toLowerCase();
-    let isDir = false;
-    try {
-        isDir = typeof services.gameEngine.isDirection === "function" ? services.gameEngine.isDirection(trimmed) : ["u","d","l","r","up","down","left","right"].includes(trimmed);
-    } catch { return false; }
-    if (!isDir) return false;
-    try { return (await services.gameEngine.sendInput(userId, from, sender, trimmed)) === true; } catch { return false; }
-}
-
-const AI_COMMAND_NAME = "chat-ai";
-async function routeAutoReply(conn, msg, ctx, commands) {
-    const ai = commands.get(AI_COMMAND_NAME);
-    if (!ai || typeof ai.handleAutoReply !== "function") return false;
-    try { return (await ai.handleAutoReply(conn, msg, ctx)) === true; } catch (e) { return false; }
+    return false;
 }
 
 module.exports = handler;
