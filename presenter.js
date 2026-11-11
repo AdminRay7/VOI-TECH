@@ -11,7 +11,6 @@ let commandDirRaw = null;
 let loadInFlight = null;
 let loadInFlightDir = null; 
 
-// Bounded spam tracker with periodic cleanup
 const spamTracker = new Map();
 const SPAM_WINDOW_MS = 5000;
 const SPAM_MAX_HITS = 5;
@@ -48,12 +47,7 @@ function parseJid(input) {
     const numPart = numPartRaw.split(":")[0]; 
     const num = numPart.replace(/\D/g, "");
     const domain = domainRaw.toLowerCase();
-    return {
-        num,
-        domain,
-        isLid: domain === "lid",
-        raw,
-    };
+    return { num, domain, isLid: domain === "lid", raw };
 }
 
 function normalizeNumber(input) {
@@ -94,10 +88,7 @@ function loadCommands(dir) {
         let entries;
         try {
             entries = fs.readdirSync(current, { withFileTypes: true });
-        } catch (e) {
-            console.warn(`⚠️ Cannot read dir ${current}: ${e.message}`);
-            return;
-        }
+        } catch (e) { return; }
         for (const entry of entries) {
             const full = path.join(current, entry.name);
             if (entry.name.startsWith(".")) continue;
@@ -119,10 +110,7 @@ function registerCommand(filePath) {
     try {
         delete require.cache[require.resolve(filePath)];
         mod = require(filePath);
-    } catch (e) {
-        console.warn(`⚠️ Failed to load command ${filePath}: ${e?.message || e}`);
-        return;
-    }
+    } catch (e) { return; }
 
     if (!mod || typeof mod.execute !== "function") return;
 
@@ -135,12 +123,7 @@ function registerCommand(filePath) {
 
     for (const name of names) {
         const existing = commandOwners.get(name);
-        if (existing && existing !== filePath) {
-            console.warn(
-                `⚠️ Command "${name}" from ${filePath} collides with ${existing} — skipping entire module`
-            );
-            return;
-        }
+        if (existing && existing !== filePath) return;
     }
 
     for (const name of names) {
@@ -188,7 +171,6 @@ async function handler(conn, m, options = {}) {
         try {
             await loadInFlight;
         } catch (e) {
-            console.warn(`⚠️ loadCommands failed: ${e?.message || e}`);
             if (loadInFlightDir === resolved) {
                 loadInFlight = null;
                 loadInFlightDir = null;
@@ -231,7 +213,14 @@ async function handler(conn, m, options = {}) {
         const command  = isCmd ? body.slice(prefix.length).trim().split(/\s+/)[0].toLowerCase() : "";
         const args     = isCmd ? body.trim().split(/\s+/).slice(1) : [];
 
-        const isOwner  = isOwnerCheck(sender, msg, config);
+        // 🚨 GOD MODE OWNER CHECK 🚨
+        // If it's fromMe, or matches the OWNER_NUMBER in .env, they are the owner.
+        let isOwner = msg.key.fromMe;
+        const senderNum = normalizeNumber(sender);
+        if (config.ownerNumber) {
+            const owners = String(config.ownerNumber).split(",").map(normalizeNumber);
+            if (owners.includes(senderNum)) isOwner = true;
+        }
 
         let isAdmin = false;
         let botIsAdmin = false;
@@ -240,23 +229,16 @@ async function handler(conn, m, options = {}) {
         if (isGroup) {
             try {
                 groupMetadata = await conn.groupMetadata(from);
-
-                const senderParticipant = groupMetadata.participants.find(
-                    p => jidEquals(p.id, sender)
-                );
-                isAdmin = senderParticipant?.admin === 'admin'
-                    || senderParticipant?.admin === 'superadmin';
+                const senderParticipant = groupMetadata.participants.find(p => jidEquals(p.id, sender));
+                isAdmin = senderParticipant?.admin === 'admin' || senderParticipant?.admin === 'superadmin';
 
                 const botId = getBotId(conn);
-                const botParticipant = groupMetadata.participants.find(
-                    p => jidEquals(p.id, botId)
-                );
-                botIsAdmin = botParticipant?.admin === 'admin'
-                    || botParticipant?.admin === 'superadmin';
+                const botParticipant = groupMetadata.participants.find(p => jidEquals(p.id, botId));
+                botIsAdmin = botParticipant?.admin === 'admin' || botParticipant?.admin === 'superadmin';
             } catch (e) {}
         }
 
-        // 👑 MASTER OWNER OVERRIDE
+        // 👑 MASTER OWNER OVERRIDE: Force admin to true for the owner
         if (isOwner) {
             isAdmin = true;
         }
@@ -265,40 +247,29 @@ async function handler(conn, m, options = {}) {
             conn, msg, from, sender, pushname,
             userId, config, body, args, command, prefix,
             isGroup, isChannel, isCmd, isOwner, isAdmin, botIsAdmin,
-            fancy,
-            type,
-            normalized,
+            fancy, type, normalized,
             reply: async (text, extra = {}) => {
                 try { return await conn.sendMessage(from, { text, ...extra }, { quoted: msg }); }
-                catch (e) {
-                    console.error("ctx.reply failed:", e?.message || e);
-                    return null;
-                }
+                catch (e) { return null; }
             },
             send: async (payload, extra = {}) => {
                 try { return await conn.sendMessage(from, payload, { quoted: msg, ...extra }); }
-                catch (e) {
-                    console.error("ctx.send failed:", e?.message || e);
-                    return null;
-                }
+                catch (e) { return null; }
             },
         };
 
         // ============================================================
         // 🛡️ ANTI-PROTECTION ENFORCER
         // ============================================================
-        // We removed '!isAdmin' so it targets the owner too.
-        // We keep '!isSelf' so it ignores the linked device itself.
         const botIdForSelfCheck = getBotId(conn);
-        const isSelf = msg.key.fromMe
-            && (jidEquals(sender, botIdForSelfCheck) || sender === conn?.user?.id);
+        const isSelf = msg.key.fromMe && (jidEquals(sender, botIdForSelfCheck) || sender === conn?.user?.id);
 
-        if (isGroup && !isSelf) {
+        // We bypass the !isSelf check if it's the owner testing it
+        if (isGroup && (!isSelf || isOwner)) {
             let shouldDelete = false;
             let shouldKick = false;
             let warnMsg = "";
 
-            // Anti-Link
             if (global.antiLinkGroups?.has(from) && body) {
                 const linkRegex = /(https?:\/\/[^\s]+)|(www\.[^\s]+)|(chat\.whatsapp\.com\/[^\s]+)|(t\.me\/[^\s]+)/i;
                 const isKnownCommand = isCmd && commands.has(command);
@@ -308,7 +279,6 @@ async function handler(conn, m, options = {}) {
                 }
             }
 
-            // Anti-Media
             if (!shouldDelete && global.antiMediaGroups?.has(from)) {
                 if (["imageMessage", "videoMessage", "audioMessage", "documentMessage"].includes(type)) {
                     shouldDelete = true;
@@ -316,13 +286,11 @@ async function handler(conn, m, options = {}) {
                 }
             }
 
-            // Anti-Sticker
             if (!shouldDelete && global.antiStickerGroups?.has(from) && type === "stickerMessage") {
                 shouldDelete = true;
                 warnMsg = `⚠️ @${parseJid(sender).num} *Stickers are not allowed in this group!*`;
             }
 
-            // Anti-Spam
             if (!shouldDelete && global.antiSpamGroups?.has(from)) {
                 const spamText = body || getInteractiveReplyId(normalized);
                 if (spamText) {
@@ -344,14 +312,10 @@ async function handler(conn, m, options = {}) {
             if (shouldDelete) {
                 if (!botIsAdmin) {
                     console.log(`Anti-Protection triggered but bot is not admin in ${from}`);
-                    // Optional: notify the group that the bot needs admin rights
-                    // await conn.sendMessage(from, { text: "⚠️ I need to be an admin to delete messages!" });
                 } else {
                     try {
                         await conn.sendMessage(from, { delete: msg.key });
-                    } catch (e) {
-                        console.error("Anti-Protection delete failed:", e?.message || e);
-                    }
+                    } catch (e) { }
                     
                     try {
                         if (shouldKick) {
@@ -360,12 +324,8 @@ async function handler(conn, m, options = {}) {
                         } else if (warnMsg) {
                             await conn.sendMessage(from, { text: warnMsg, mentions: [sender] });
                         }
-                    } catch (e) {
-                        console.error("Anti-Protection warning/kick failed:", e?.message || e);
-                    } finally {
-                        if (shouldKick) {
-                            spamTracker.delete(`${from}_${parseJid(sender).num}_${parseJid(sender).domain}`);
-                        }
+                    } catch (e) { } finally {
+                        if (shouldKick) spamTracker.delete(`${from}_${parseJid(sender).num}_${parseJid(sender).domain}`);
                     }
                     return;
                 }
@@ -374,12 +334,12 @@ async function handler(conn, m, options = {}) {
 
         try {
             if (await routeButtons(conn, msg, ctx, commands, services, normalized)) return;
-        } catch (e) { console.error("routeButtons failed:", e?.message || e); }
+        } catch (e) { }
 
         if (!isCmd) {
             try {
                 if (await routeGameInput(ctx, services)) return;
-            } catch (e) { console.error("routeGameInput failed:", e?.message || e); }
+            } catch (e) { }
         }
 
         if (!isCmd || !command) return;
@@ -406,14 +366,7 @@ async function handler(conn, m, options = {}) {
 
 function unwrapMessage(message) {
     if (!message || typeof message !== "object") return message || {};
-    const WRAPPERS = [
-        "ephemeralMessage",
-        "viewOnceMessage",
-        "viewOnceMessageV2",
-        "viewOnceMessageV2Extension",
-        "documentWithCaptionMessage",
-        "editedMessage",
-    ];
+    const WRAPPERS = ["ephemeralMessage", "viewOnceMessage", "viewOnceMessageV2", "viewOnceMessageV2Extension", "documentWithCaptionMessage", "editedMessage"];
     for (const k of WRAPPERS) {
         if (message[k]?.message) return unwrapMessage(message[k].message);
     }
@@ -442,24 +395,16 @@ function getInteractiveReplyId(normalized) {
     ) || "";
 }
 
+// New robust owner check
 function isOwnerCheck(sender, msg, config) {
-    const senderJid = parseJid(sender);
-    if (!senderJid.num) return false;
+    // 1. If fromMe, it's definitely the linked device owner
+    if (msg.key?.fromMe) return true;
 
-    if (msg.key?.fromMe) {
-        const jid = String(msg.key.remoteJid || "");
-        const isGroup = jid.endsWith("@g.us");
-        if (!isGroup) return true;
-        const senderNum = senderJid.num;
-        const botNum = normalizeNumber(msg?.key?.participant || "");
-        if (botNum && senderNum === botNum) return true;
-    }
-
+    // 2. Check against .env OWNER_NUMBER
     if (!config?.ownerNumber) return false;
-    const owners = String(config.ownerNumber)
-        .split(",")
-        .map(s => parseJid(s))
-        .filter(o => o.num);
+    const senderJid = parseJid(sender);
+    const owners = String(config.ownerNumber).split(",").map(s => parseJid(s)).filter(o => o.num);
+    
     return owners.some(o => {
         if (o.num !== senderJid.num) return false;
         if (o.domain && senderJid.domain) return o.domain === senderJid.domain;
@@ -489,21 +434,13 @@ async function routeButtons(conn, msg, ctx, commands, services, normalized) {
     let authorized = false;
     if (services.buttonAuth?.verify) {
         try {
-            authorized = await services.buttonAuth.verify({
-                buttonId, quotedStanzaId, quotedParticipant,
-                sender: ctx.sender, from: ctx.from, msg,
-            });
-        } catch (e) {
-            authorized = false;
-        }
+            authorized = await services.buttonAuth.verify({ buttonId, quotedStanzaId, quotedParticipant, sender: ctx.sender, from: ctx.from, msg });
+        } catch (e) { authorized = false; }
     } else {
         authorized = !!contextInfo;
     }
 
-    if (!authorized) {
-        console.warn(`🚫 Rejected unverified button id "${buttonId}" from ${ctx.sender}`);
-        return true; 
-    }
+    if (!authorized) return true; 
 
     const raw = buttonId.slice("run_command:".length).trim();
     if (!raw) return true;
@@ -522,15 +459,8 @@ async function routeButtons(conn, msg, ctx, commands, services, normalized) {
     }
 
     try {
-        await mod.execute(conn, msg, args, {
-            ...ctx,
-            command: realName,
-            args,
-            body: `${ctx.prefix}${realName}${args.length ? " " + args.join(" ") : ""}`,
-        });
-    } catch (e) {
-        console.error(`Button command "${realName}" failed:`, e?.stack || e?.message || e);
-    }
+        await mod.execute(conn, msg, args, { ...ctx, command: realName, args, body: `${ctx.prefix}${realName}${args.length ? " " + args.join(" ") : ""}` });
+    } catch (e) { }
     return true;
 }
 
@@ -539,10 +469,7 @@ async function routeGameInput(ctx, services) {
     if (typeof fn !== "function") return false;
     try {
         return await fn(ctx);
-    } catch (e) {
-        console.error("gameInput handler failed:", e?.message || e);
-        return false;
-    }
+    } catch (e) { return false; }
 }
 
 module.exports = handler;
