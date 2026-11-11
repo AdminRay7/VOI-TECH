@@ -41,7 +41,6 @@ app.post("/api/register", async (req, res) => {
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        // Admin detection
         const role = (email.toLowerCase() === config.adminEmail.toLowerCase()) ? "admin" : "user";
 
         user = new User({ email, password: hashedPassword, role });
@@ -68,7 +67,6 @@ app.post("/api/login", async (req, res) => {
     }
 });
 
-// Middleware for protected routes
 const authMiddleware = (req, res, next) => {
     const token = req.headers.authorization?.split(" ")[1];
     if (!token) return res.status(401).json({ error: "No token provided" });
@@ -82,7 +80,7 @@ const authMiddleware = (req, res, next) => {
 };
 
 // ============================================================
-// SETTINGS API (Protected)
+// SETTINGS API
 // ============================================================
 app.get("/api/settings/:phone", authMiddleware, async (req, res) => {
     try {
@@ -111,16 +109,12 @@ app.post("/api/settings/:phone", authMiddleware, async (req, res) => {
 // ============================================================
 // WEB ROUTES
 // ============================================================
-// Serve Login & Register
 app.get("/login", (req, res) => res.sendFile(path.join(__dirname, "public", "login.html")));
 app.get("/register", (req, res) => res.sendFile(path.join(__dirname, "public", "register.html")));
-
-// Default landing page is the dashboard (JS will redirect if not logged in)
 app.get("/", (req, res) => res.sendFile(path.join(__dirname, "public", "dashboard.html")));
 app.get("/dashboard", (req, res) => res.sendFile(path.join(__dirname, "public", "dashboard.html")));
 app.get("/settings", (req, res) => res.sendFile(path.join(__dirname, "public", "settings.html")));
 app.get("/pair", (req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
-
 app.use(express.static(path.join(__dirname, "public"), { extensions: ['html'] }));
 
 // ============================================================
@@ -133,6 +127,9 @@ if (!global.sessions) global.sessions = new Map();
 if (!global.mongoClient) global.mongoClient = null;
 if (!global.messageCache) global.messageCache = new Map();
 if (!global.statusCache) global.statusCache = new Map();
+if (!global.welcomeGroups) global.welcomeGroups = new Set();
+if (!global.goodbyeGroups) global.goodbyeGroups = new Set();
+
 let pairingQueue = Promise.resolve();
 
 async function initMongo() {
@@ -145,9 +142,7 @@ async function initMongo() {
 
 async function useMongoDBAuthState(collection, sessionId) {
     const writeData = async (data, id) => {
-        try {
-            await collection.updateOne({ _id: id }, { $set: { data: JSON.parse(JSON.stringify(data, BufferJSON.replacer)) } }, { upsert: true });
-        } catch (error) {}
+        try { await collection.updateOne({ _id: id }, { $set: { data: JSON.parse(JSON.stringify(data, BufferJSON.replacer)) } }, { upsert: true }); } catch (error) {}
     };
     const readData = async (id) => {
         try {
@@ -225,6 +220,51 @@ async function bootSocket(sessionId, session, isResuming = false) {
                     if (call.status === 'offer') await conn.sendMessage(call.from, { text: `⚠️ Anti-Call is Active. Send a text instead!` });
                 } catch (error) {}
             }
+        }
+    });
+
+    // WELCOME & GOODBYE MESSAGES
+    conn.ev.on('group-participants.update', async (anu) => {
+        try {
+            const { id, participants, action } = anu;
+            
+            // Fetch group metadata for the name
+            const groupMetadata = await conn.groupMetadata(id);
+            const groupName = groupMetadata.subject;
+
+            for (const participant of participants) {
+                const userJid = participant.id || participant;
+                const userNumber = userJid.split('@')[0];
+                
+                // Fetch profile picture (fallback to empty if not found)
+                let profilePic;
+                try {
+                    profilePic = await conn.profilePictureUrl(userJid, 'image');
+                } catch {
+                    profilePic = 'https://i.ibb.co/6P7Zq6B/avatar.png'; // Default avatar
+                }
+
+                if (action === 'add' && global.welcomeGroups.has(id)) {
+                    const text = `╭─── • 👋 • ───╮\n   *WELCOME*\n╰─── • 👋 • ───╯\n\nHello @${userNumber}, welcome to *${groupName}*!\n\nPlease read the group rules and enjoy your stay. 😊`;
+                    
+                    await conn.sendMessage(id, { 
+                        image: { url: profilePic }, 
+                        caption: text, 
+                        mentions: [userJid] 
+                    });
+                }
+
+                if (action === 'remove' && global.goodbyeGroups.has(id)) {
+                    const text = `╭─── • 👋 • ───╮\n   *GOODBYE*\n╰─── • 👋 • ───╯\n\nGoodbye @${userNumber}, we hope to see you again soon! 👋`;
+                    
+                    await conn.sendMessage(id, { 
+                        text: text, 
+                        mentions: [userJid] 
+                    });
+                }
+            }
+        } catch (e) {
+            console.error("Welcome/Goodbye error:", e.message);
         }
     });
 
