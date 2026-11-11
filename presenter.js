@@ -133,19 +133,30 @@ async function handler(conn, m, options = {}) {
         const args     = isCmd ? body.trim().split(/\s+/).slice(1) : [];
         const isOwner  = isOwnerCheck(sender, msg, config);
 
+        // Get group metadata
         let isAdmin = false;
+        let botIsAdmin = false;
+        let groupMetadata = null;
+        
         if (isGroup) {
             try {
-                const groupMetadata = await conn.groupMetadata(from);
+                groupMetadata = await conn.groupMetadata(from);
+                
+                // Check if sender is admin
                 const participant = groupMetadata.participants.find(p => p.id === sender);
                 isAdmin = participant?.admin === 'admin' || participant?.admin === 'superadmin';
+
+                // Check if bot is admin
+                const botId = conn.user.id.split(':')[0] + '@s.whatsapp.net';
+                const botParticipant = groupMetadata.participants.find(p => p.id === botId);
+                botIsAdmin = botParticipant?.admin === 'admin' || botParticipant?.admin === 'superadmin';
             } catch (e) {}
         }
 
         const ctx = {
             conn, msg, from, sender, pushname,
             userId, config, body, args, command, prefix,
-            isGroup, isChannel, isCmd, isOwner, isAdmin,
+            isGroup, isChannel, isCmd, isOwner, isAdmin, botIsAdmin,
             fancy, 
             type,
             normalized,
@@ -160,10 +171,14 @@ async function handler(conn, m, options = {}) {
         };
 
         // ============================================================
-        // 🛡️ ANTI-PROTECTION ENFORCER (Auto-Delete)
+        // 🛡️ ANTI-PROTECTION ENFORCER
         // ============================================================
-        // Check if the message is NOT from me, before enforcing anti-protections
-        if (isGroup && !isAdmin && !isOwner && !msg.key.fromMe) {
+        // Rules:
+        // 1. Must be a group.
+        // 2. Sender is NOT an admin.
+        // 3. Sender is NOT the linked device (msg.key.fromMe).
+        // 4. Bot MUST be admin to delete.
+        if (isGroup && !isAdmin && !msg.key.fromMe) {
             let shouldDelete = false;
             let warnMsg = "";
 
@@ -191,7 +206,7 @@ async function handler(conn, m, options = {}) {
             }
 
             // Anti-Spam
-            if (global.antiSpamGroups?.has(from)) {
+            if (global.antiSpamGroups?.has(from) && body) {
                 if (!global.spamTracker) global.spamTracker = new Map();
                 const spamKey = `${from}_${sender}`;
                 const now = Date.now();
@@ -206,18 +221,28 @@ async function handler(conn, m, options = {}) {
                 }
             }
 
+            // EXECUTE ACTION
             if (shouldDelete) {
                 try {
-                    await conn.sendMessage(from, { delete: msg.key });
-                    if (warnMsg.includes("kicked")) {
-                        await conn.sendMessage(from, { text: warnMsg, mentions: [sender] });
-                        await conn.groupParticipantsUpdate(from, [sender], "remove");
-                        if (global.spamTracker) global.spamTracker.delete(`${from}_${sender}`);
+                    if (!botIsAdmin) {
+                        // Bot cannot delete messages, so don't try
+                        console.log(`Anti-Protection triggered but bot is not admin in ${from}`);
                     } else {
-                        await conn.sendMessage(from, { text: warnMsg, mentions: [sender] });
+                        await conn.sendMessage(from, { delete: msg.key });
+                        
+                        if (warnMsg.includes("kicked")) {
+                            await conn.sendMessage(from, { text: warnMsg, mentions: [sender] });
+                            await conn.groupParticipantsUpdate(from, [sender], "remove");
+                            if (global.spamTracker) global.spamTracker.delete(`${from}_${sender}`);
+                        } else {
+                            await conn.sendMessage(from, { text: warnMsg, mentions: [sender] });
+                        }
+                        
+                        return; 
                     }
-                    return; 
-                } catch (e) { console.error("Anti-Protection delete failed:", e.message); }
+                } catch (e) { 
+                    console.error("Anti-Protection delete failed:", e.message); 
+                }
             }
         }
 
@@ -225,7 +250,13 @@ async function handler(conn, m, options = {}) {
             if (await routeButtons(conn, msg, ctx, commands, services)) return;
         } catch (e) { }
 
-        if (!isCmd) return; // Only process commands if it starts with prefix
+        if (!isCmd) {
+            try {
+                if (await routeGameInput(ctx, services)) return;
+            } catch (e) { }
+        }
+
+        if (!isCmd || !command) return;
 
         const mod = commands.get(command);
         if (!mod || typeof mod.execute !== "function") return;
@@ -298,6 +329,10 @@ async function routeButtons(conn, msg, ctx, commands, services) {
         } catch (e) { }
         return true;
     }
+    return false;
+}
+
+async function routeGameInput(ctx, services) {
     return false;
 }
 
