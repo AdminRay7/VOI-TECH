@@ -6,16 +6,16 @@ const { fancy } = require("./lib/font");
 const commandCache = new Map();
 const commandOwners = new Map();
 let cacheLoaded = false;
-let commandDir = null;      // absolute, resolved
-let commandDirRaw = null;   // as passed in (kept for logging)
+let commandDir = null;      
+let commandDirRaw = null;   
 let loadInFlight = null;
-let loadInFlightDir = null; // FIX #8: track which dir the in-flight load is for
+let loadInFlightDir = null; 
 
-// FIX #19: bounded spam tracker with periodic cleanup
+// Bounded spam tracker with periodic cleanup
 const spamTracker = new Map();
 const SPAM_WINDOW_MS = 5000;
 const SPAM_MAX_HITS = 5;
-const SPAM_TRACKER_TTL = 10 * 60 * 1000; // 10 min
+const SPAM_TRACKER_TTL = 10 * 60 * 1000; 
 let spamCleanupTimer = null;
 
 function ensureSpamCleanup() {
@@ -33,7 +33,6 @@ function ensureSpamCleanup() {
 }
 ensureSpamCleanup();
 
-// FIX #18: allow disposal for tests / multi-tenant teardown
 function dispose() {
     if (spamCleanupTimer) {
         try { clearInterval(spamCleanupTimer); } catch {}
@@ -42,15 +41,11 @@ function dispose() {
     spamTracker.clear();
 }
 
-/**
- * FIX #10: normalizeNumber must preserve LID vs PN distinction.
- * Returns { num, domain, isLid, raw } so callers can compare correctly.
- */
 function parseJid(input) {
     if (input == null) return { num: "", domain: "", isLid: false, raw: "" };
     const raw = String(input);
     const [numPartRaw, domainRaw = ""] = raw.split("@");
-    const numPart = numPartRaw.split(":")[0]; // strip device suffix
+    const numPart = numPartRaw.split(":")[0]; 
     const num = numPart.replace(/\D/g, "");
     const domain = domainRaw.toLowerCase();
     return {
@@ -61,34 +56,24 @@ function parseJid(input) {
     };
 }
 
-// Back-compat helper — returns just the bare number string
 function normalizeNumber(input) {
     return parseJid(input).num;
 }
 
-/**
- * FIX #10: compare two JIDs safely, aware of LID vs PN.
- * Returns true only if they refer to the same user under the same domain,
- * OR if both are bare numbers (legacy paths).
- */
 function jidEquals(a, b) {
     const A = parseJid(a);
     const B = parseJid(b);
     if (!A.num || !B.num) return false;
     if (A.num !== B.num) return false;
-    // Same number: if both have a domain, require domains to match (LID ≠ PN)
     if (A.domain && B.domain) return A.domain === B.domain;
-    // Missing domain on one side → be permissive (legacy callers)
     return true;
 }
 
-// FIX #14: safe bot id derivation
 function getBotId(conn) {
     const raw = conn?.user?.id;
     if (!raw) return "";
     const { num, domain } = parseJid(raw);
     if (!num) return "";
-    // Preserve the domain (s.whatsapp.net vs lid) so comparisons stay correct
     return domain ? `${num}@${domain}` : `${num}@s.whatsapp.net`;
 }
 
@@ -97,7 +82,7 @@ function loadCommands(dir) {
     if (!dir) throw new Error("loadCommands: dir required");
 
     commandDirRaw = dir;
-    commandDir = path.resolve(dir); // FIX #8: always absolute
+    commandDir = path.resolve(dir); 
 
     if (!fs.existsSync(commandDir)) {
         console.warn(`⚠️ Command dir not found: ${commandDirRaw}`);
@@ -132,7 +117,6 @@ function loadCommands(dir) {
 function registerCommand(filePath) {
     let mod;
     try {
-        // FIX #10 (orig): log require failures instead of silently swallowing
         delete require.cache[require.resolve(filePath)];
         mod = require(filePath);
     } catch (e) {
@@ -149,9 +133,6 @@ function registerCommand(filePath) {
 
     if (names.length === 0) return;
 
-    // FIX #6: reject the entire module if ANY of its names collides with a
-    // different existing file. This keeps the name→module map consistent
-    // (previously some names mapped to A, others to B after a partial overlap).
     for (const name of names) {
         const existing = commandOwners.get(name);
         if (existing && existing !== filePath) {
@@ -169,8 +150,6 @@ function registerCommand(filePath) {
 }
 
 function reloadCommands() {
-    // FIX #4: use resolved absolute dir so require.cache keys match, and
-    // reload from `commandDir` (not the raw, possibly-relative path).
     if (commandDir) {
         const prefix = commandDir + path.sep;
         for (const key of Object.keys(require.cache)) {
@@ -184,7 +163,6 @@ function reloadCommands() {
     cacheLoaded = false;
     loadInFlight = null;
     loadInFlightDir = null;
-    // FIX #4: reset spam windows so a stale ban doesn't survive reload
     spamTracker.clear();
 
     if (commandDir) loadCommands(commandDir);
@@ -201,8 +179,6 @@ async function handler(conn, m, options = {}) {
         commandsDir = null,
     } = options;
 
-    // FIX #9 + #8: per-directory in-flight tracker so concurrent handlers
-    // with different commandsDir don't clobber each other. Reset on failure.
     if (!cacheLoaded && commandsDir) {
         const resolved = path.resolve(commandsDir);
         if (!loadInFlight || loadInFlightDir !== resolved) {
@@ -228,8 +204,6 @@ async function handler(conn, m, options = {}) {
         if (!msg.message) return;
         if (!msg.key || !msg.key.remoteJid) return;
 
-        // FIX #20: guard msg.key.id before calling dedupe — undefined ids
-        // must never be treated as "already seen"
         if (services.dedupe?.isDuplicate && msg.key.id) {
             try {
                 const dup = await services.dedupe.isDuplicate(msg.key.id, { sessionId: userId });
@@ -240,7 +214,6 @@ async function handler(conn, m, options = {}) {
         try { services.watchdog?.heartbeat?.(userId); } catch {}
 
         const from      = msg.key.remoteJid;
-        // FIX #1 (orig): prefer participant, fall back appropriately
         const sender    = msg.key.participant
             || (msg.key.fromMe ? conn?.user?.id : msg.key.remoteJid)
             || msg.key.remoteJid;
@@ -268,15 +241,12 @@ async function handler(conn, m, options = {}) {
             try {
                 groupMetadata = await conn.groupMetadata(from);
 
-                // FIX #10: LID-aware comparison so admin detection works in
-                // groups that use @lid JIDs
                 const senderParticipant = groupMetadata.participants.find(
                     p => jidEquals(p.id, sender)
                 );
                 isAdmin = senderParticipant?.admin === 'admin'
                     || senderParticipant?.admin === 'superadmin';
 
-                // FIX #14 + #10: use safe botId and LID-aware comparison
                 const botId = getBotId(conn);
                 const botParticipant = groupMetadata.participants.find(
                     p => jidEquals(p.id, botId)
@@ -286,9 +256,7 @@ async function handler(conn, m, options = {}) {
             } catch (e) {}
         }
 
-        // ============================================================
         // 👑 MASTER OWNER OVERRIDE
-        // ============================================================
         if (isOwner) {
             isAdmin = true;
         }
@@ -300,7 +268,6 @@ async function handler(conn, m, options = {}) {
             fancy,
             type,
             normalized,
-            // FIX #12: log errors instead of silently swallowing; still return null
             reply: async (text, extra = {}) => {
                 try { return await conn.sendMessage(from, { text, ...extra }, { quoted: msg }); }
                 catch (e) {
@@ -320,14 +287,13 @@ async function handler(conn, m, options = {}) {
         // ============================================================
         // 🛡️ ANTI-PROTECTION ENFORCER
         // ============================================================
-        // FIX #9 (orig) / #9: only exempt fromMe when it's genuinely our own
-        // session (sender === bot id). Otherwise a self-message inside a group
-        // from a linked device would bypass moderation.
+        // We removed '!isAdmin' so it targets the owner too.
+        // We keep '!isSelf' so it ignores the linked device itself.
         const botIdForSelfCheck = getBotId(conn);
         const isSelf = msg.key.fromMe
             && (jidEquals(sender, botIdForSelfCheck) || sender === conn?.user?.id);
 
-        if (isGroup && !isAdmin && !isSelf) {
+        if (isGroup && !isSelf) {
             let shouldDelete = false;
             let shouldKick = false;
             let warnMsg = "";
@@ -335,7 +301,6 @@ async function handler(conn, m, options = {}) {
             // Anti-Link
             if (global.antiLinkGroups?.has(from) && body) {
                 const linkRegex = /(https?:\/\/[^\s]+)|(www\.[^\s]+)|(chat\.whatsapp\.com\/[^\s]+)|(t\.me\/[^\s]+)/i;
-                // FIX #22 (orig): don't nuke legitimate commands from non-admins
                 const isKnownCommand = isCmd && commands.has(command);
                 if (!isKnownCommand && linkRegex.test(body)) {
                     shouldDelete = true;
@@ -357,7 +322,7 @@ async function handler(conn, m, options = {}) {
                 warnMsg = `⚠️ @${parseJid(sender).num} *Stickers are not allowed in this group!*`;
             }
 
-            // Anti-Spam (also catches button-click spam — FIX #11)
+            // Anti-Spam
             if (!shouldDelete && global.antiSpamGroups?.has(from)) {
                 const spamText = body || getInteractiveReplyId(normalized);
                 if (spamText) {
@@ -379,14 +344,15 @@ async function handler(conn, m, options = {}) {
             if (shouldDelete) {
                 if (!botIsAdmin) {
                     console.log(`Anti-Protection triggered but bot is not admin in ${from}`);
+                    // Optional: notify the group that the bot needs admin rights
+                    // await conn.sendMessage(from, { text: "⚠️ I need to be an admin to delete messages!" });
                 } else {
                     try {
                         await conn.sendMessage(from, { delete: msg.key });
                     } catch (e) {
                         console.error("Anti-Protection delete failed:", e?.message || e);
                     }
-                    // FIX #5: always clean up spam tracker for this user, even
-                    // if the warn/kick throws, to prevent unbounded growth
+                    
                     try {
                         if (shouldKick) {
                             await conn.sendMessage(from, { text: warnMsg, mentions: [sender] });
@@ -398,9 +364,7 @@ async function handler(conn, m, options = {}) {
                         console.error("Anti-Protection warning/kick failed:", e?.message || e);
                     } finally {
                         if (shouldKick) {
-                            spamTracker.delete(
-                                `${from}_${parseJid(sender).num}_${parseJid(sender).domain}`
-                            );
+                            spamTracker.delete(`${from}_${parseJid(sender).num}_${parseJid(sender).domain}`);
                         }
                     }
                     return;
@@ -408,7 +372,6 @@ async function handler(conn, m, options = {}) {
             }
         }
 
-        // FIX #6 (orig): pass normalized into routeButtons
         try {
             if (await routeButtons(conn, msg, ctx, commands, services, normalized)) return;
         } catch (e) { console.error("routeButtons failed:", e?.message || e); }
@@ -469,10 +432,6 @@ function extractBody(normalized, type) {
     }
 }
 
-/**
- * FIX #11: pull the reply/button id out of interactive messages so anti-spam
- * can count button-click spam and games can inspect it.
- */
 function getInteractiveReplyId(normalized) {
     if (!normalized) return "";
     return (
@@ -487,20 +446,12 @@ function isOwnerCheck(sender, msg, config) {
     const senderJid = parseJid(sender);
     if (!senderJid.num) return false;
 
-    // FIX #3: be consistent — treat fromMe as owner in DMs only when the
-    // message is actually our own session. In groups, require explicit
-    // inclusion in config.ownerNumber OR being the bot id itself.
     if (msg.key?.fromMe) {
         const jid = String(msg.key.remoteJid || "");
         const isGroup = jid.endsWith("@g.us");
         if (!isGroup) return true;
-        // In a group, fromMe from OUR OWN session means we (the bot) sent it.
-        // That should count as owner — but only if the sender is us.
         const senderNum = senderJid.num;
         const botNum = normalizeNumber(msg?.key?.participant || "");
-        // participant is who the message is attributed to in fromMe group msgs;
-        // if unset, fall back to remoteJid -> but that's the group itself.
-        // Safer: require config ownerNumber match for fromMe group messages.
         if (botNum && senderNum === botNum) return true;
     }
 
@@ -511,13 +462,11 @@ function isOwnerCheck(sender, msg, config) {
         .filter(o => o.num);
     return owners.some(o => {
         if (o.num !== senderJid.num) return false;
-        // If owner config explicitly includes a domain, require match
         if (o.domain && senderJid.domain) return o.domain === senderJid.domain;
         return true;
     });
 }
 
-// FIX #1, #2, #5, #6, #7 (orig) — button routing
 async function routeButtons(conn, msg, ctx, commands, services, normalized) {
     const src = normalized || msg.message || {};
     const buttonId =
@@ -526,11 +475,8 @@ async function routeButtons(conn, msg, ctx, commands, services, normalized) {
         src?.listResponseMessage?.singleSelectReply?.selectedRowId;
 
     if (!buttonId) return false;
-
     if (!buttonId.startsWith("run_command:")) return false;
 
-    // FIX #2 (orig): read contextInfo from the CORRECT interactive message,
-    // not from extendedTextMessage.
     const contextInfo =
         src?.buttonsResponseMessage?.contextInfo ||
         src?.templateButtonReplyMessage?.contextInfo ||
@@ -540,32 +486,25 @@ async function routeButtons(conn, msg, ctx, commands, services, normalized) {
     const quotedStanzaId = contextInfo?.stanzaId;
     const quotedParticipant = contextInfo?.participant;
 
-    // FIX #18 (orig): authorization policy
     let authorized = false;
     if (services.buttonAuth?.verify) {
         try {
             authorized = await services.buttonAuth.verify({
-                buttonId,
-                quotedStanzaId,
-                quotedParticipant,
-                sender: ctx.sender,
-                from: ctx.from,
-                msg,
+                buttonId, quotedStanzaId, quotedParticipant,
+                sender: ctx.sender, from: ctx.from, msg,
             });
         } catch (e) {
             authorized = false;
         }
     } else {
-        // Default policy: real WhatsApp button replies always carry contextInfo
         authorized = !!contextInfo;
     }
 
     if (!authorized) {
         console.warn(`🚫 Rejected unverified button id "${buttonId}" from ${ctx.sender}`);
-        return true; // consumed, nothing executed
+        return true; 
     }
 
-    // FIX #1 (orig): parse name BEFORE lookup so args work
     const raw = buttonId.slice("run_command:".length).trim();
     if (!raw) return true;
     const parts = raw.split(":");
@@ -595,7 +534,6 @@ async function routeButtons(conn, msg, ctx, commands, services, normalized) {
     return true;
 }
 
-// FIX #7 (orig): real game input routing
 async function routeGameInput(ctx, services) {
     const fn = services?.gameInput?.handle;
     if (typeof fn !== "function") return false;
