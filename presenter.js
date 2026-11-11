@@ -107,9 +107,6 @@ async function handler(conn, m, options = {}) {
         if (!msg.message) return;
         if (!msg.key || !msg.key.remoteJid) return;
 
-        // Ignore our own messages to prevent anti-protection loops
-        if (msg.key.fromMe) return;
-
         if (services.dedupe?.isDuplicate) {
             try {
                 const dup = await services.dedupe.isDuplicate(msg.key.id, { sessionId: userId });
@@ -136,7 +133,6 @@ async function handler(conn, m, options = {}) {
         const args     = isCmd ? body.trim().split(/\s+/).slice(1) : [];
         const isOwner  = isOwnerCheck(sender, msg, config);
 
-        // Get group metadata for admin checks
         let isAdmin = false;
         if (isGroup) {
             try {
@@ -166,11 +162,12 @@ async function handler(conn, m, options = {}) {
         // ============================================================
         // 🛡️ ANTI-PROTECTION ENFORCER (Auto-Delete)
         // ============================================================
-        if (isGroup && !isAdmin && !isOwner) {
+        // Check if the message is NOT from me, before enforcing anti-protections
+        if (isGroup && !isAdmin && !isOwner && !msg.key.fromMe) {
             let shouldDelete = false;
             let warnMsg = "";
 
-            // 1. ANTI-LINK DETECTION (Catches HTTP, WWW, chat.whatsapp.com, t.me)
+            // Anti-Link
             if (global.antiLinkGroups?.has(from) && body) {
                 const linkRegex = /(https?:\/\/[^\s]+)|(www\.[^\s]+)|(chat\.whatsapp\.com\/[^\s]+)|(t\.me\/[^\s]+)/gi;
                 if (linkRegex.test(body)) {
@@ -179,7 +176,7 @@ async function handler(conn, m, options = {}) {
                 }
             }
 
-            // 2. ANTI-MEDIA DETECTION
+            // Anti-Media
             if (global.antiMediaGroups?.has(from)) {
                 if (["imageMessage", "videoMessage", "audioMessage", "documentMessage"].includes(type)) {
                     shouldDelete = true;
@@ -187,19 +184,18 @@ async function handler(conn, m, options = {}) {
                 }
             }
 
-            // 3. ANTI-STICKER DETECTION
+            // Anti-Sticker
             if (global.antiStickerGroups?.has(from) && type === "stickerMessage") {
                 shouldDelete = true;
                 warnMsg = `⚠️ @${sender.split('@')[0]} *Stickers are not allowed in this group!*`;
             }
 
-            // 4. ANTI-SPAM DETECTION (Kicks after 5 messages in 5 seconds)
+            // Anti-Spam
             if (global.antiSpamGroups?.has(from)) {
                 if (!global.spamTracker) global.spamTracker = new Map();
                 const spamKey = `${from}_${sender}`;
                 const now = Date.now();
                 let userSpam = global.spamTracker.get(spamKey) || [];
-                
                 userSpam = userSpam.filter(time => now - time < 5000); 
                 userSpam.push(now);
                 global.spamTracker.set(spamKey, userSpam);
@@ -210,13 +206,9 @@ async function handler(conn, m, options = {}) {
                 }
             }
 
-            // EXECUTE THE ACTION
             if (shouldDelete) {
                 try {
-                    // 1. Delete the message
                     await conn.sendMessage(from, { delete: msg.key });
-                    
-                    // 2. Warn or Kick
                     if (warnMsg.includes("kicked")) {
                         await conn.sendMessage(from, { text: warnMsg, mentions: [sender] });
                         await conn.groupParticipantsUpdate(from, [sender], "remove");
@@ -224,11 +216,8 @@ async function handler(conn, m, options = {}) {
                     } else {
                         await conn.sendMessage(from, { text: warnMsg, mentions: [sender] });
                     }
-                    
-                    return; // Stop processing further (don't let the command or AI reply)
-                } catch (e) { 
-                    console.error("Anti-Protection delete failed:", e.message); 
-                }
+                    return; 
+                } catch (e) { console.error("Anti-Protection delete failed:", e.message); }
             }
         }
 
@@ -236,13 +225,7 @@ async function handler(conn, m, options = {}) {
             if (await routeButtons(conn, msg, ctx, commands, services)) return;
         } catch (e) { }
 
-        if (!isCmd) {
-            try {
-                if (await routeGameInput(ctx, services)) return;
-            } catch (e) { }
-        }
-
-        if (!isCmd || !command) return;
+        if (!isCmd) return; // Only process commands if it starts with prefix
 
         const mod = commands.get(command);
         if (!mod || typeof mod.execute !== "function") return;
@@ -315,10 +298,6 @@ async function routeButtons(conn, msg, ctx, commands, services) {
         } catch (e) { }
         return true;
     }
-    return false;
-}
-
-async function routeGameInput(ctx, services) {
     return false;
 }
 
