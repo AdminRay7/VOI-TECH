@@ -131,9 +131,10 @@ async function handler(conn, m, options = {}) {
         const isCmd    = !!(body && body.startsWith(prefix));
         const command  = isCmd ? body.slice(prefix.length).trim().split(/\s+/)[0].toLowerCase() : "";
         const args     = isCmd ? body.trim().split(/\s+/).slice(1) : [];
+        
+        // Master Owner Check
         const isOwner  = isOwnerCheck(sender, msg, config);
 
-        // Get group metadata
         let isAdmin = false;
         let botIsAdmin = false;
         let groupMetadata = null;
@@ -151,6 +152,15 @@ async function handler(conn, m, options = {}) {
                 const botParticipant = groupMetadata.participants.find(p => p.id === botId);
                 botIsAdmin = botParticipant?.admin === 'admin' || botParticipant?.admin === 'superadmin';
             } catch (e) {}
+        }
+
+        // ============================================================
+        // 👑 MASTER OWNER OVERRIDE
+        // ============================================================
+        // If the sender is the Master Owner (from .env), give them Admin rights 
+        // inside the bot's brain, even if WhatsApp says they are not admin.
+        if (isOwner) {
+            isAdmin = true;
         }
 
         const ctx = {
@@ -173,11 +183,6 @@ async function handler(conn, m, options = {}) {
         // ============================================================
         // 🛡️ ANTI-PROTECTION ENFORCER
         // ============================================================
-        // Rules:
-        // 1. Must be a group.
-        // 2. Sender is NOT an admin.
-        // 3. Sender is NOT the linked device (msg.key.fromMe).
-        // 4. Bot MUST be admin to delete.
         if (isGroup && !isAdmin && !msg.key.fromMe) {
             let shouldDelete = false;
             let warnMsg = "";
@@ -221,15 +226,12 @@ async function handler(conn, m, options = {}) {
                 }
             }
 
-            // EXECUTE ACTION
             if (shouldDelete) {
                 try {
                     if (!botIsAdmin) {
-                        // Bot cannot delete messages, so don't try
                         console.log(`Anti-Protection triggered but bot is not admin in ${from}`);
                     } else {
                         await conn.sendMessage(from, { delete: msg.key });
-                        
                         if (warnMsg.includes("kicked")) {
                             await conn.sendMessage(from, { text: warnMsg, mentions: [sender] });
                             await conn.groupParticipantsUpdate(from, [sender], "remove");
@@ -237,7 +239,6 @@ async function handler(conn, m, options = {}) {
                         } else {
                             await conn.sendMessage(from, { text: warnMsg, mentions: [sender] });
                         }
-                        
                         return; 
                     }
                 } catch (e) { 
@@ -307,6 +308,7 @@ function normalizeNumber(input) {
 function isOwnerCheck(sender, msg, config) {
     const senderNum = normalizeNumber(sender);
     if (!senderNum) return false;
+    // Trust fromMe only if it's a direct message to yourself
     if (msg.key?.fromMe) {
         const jid = String(msg.key.remoteJid || "");
         if (!jid.endsWith("@g.us")) return true;
