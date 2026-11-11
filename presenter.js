@@ -107,6 +107,9 @@ async function handler(conn, m, options = {}) {
         if (!msg.message) return;
         if (!msg.key || !msg.key.remoteJid) return;
 
+        // Ignore our own messages to prevent anti-protection loops
+        if (msg.key.fromMe) return;
+
         if (services.dedupe?.isDuplicate) {
             try {
                 const dup = await services.dedupe.isDuplicate(msg.key.id, { sessionId: userId });
@@ -167,48 +170,53 @@ async function handler(conn, m, options = {}) {
             let shouldDelete = false;
             let warnMsg = "";
 
-            // Anti-Link
+            // 1. ANTI-LINK DETECTION (Catches HTTP, WWW, chat.whatsapp.com, t.me)
             if (global.antiLinkGroups?.has(from) && body) {
-                const linkRegex = /chat\.whatsapp\.com|https?:\/\/[^\s]+/gi;
+                const linkRegex = /(https?:\/\/[^\s]+)|(www\.[^\s]+)|(chat\.whatsapp\.com\/[^\s]+)|(t\.me\/[^\s]+)/gi;
                 if (linkRegex.test(body)) {
                     shouldDelete = true;
-                    warnMsg = `⚠️ @${sender.split('@')[0]} links are not allowed here!`;
+                    warnMsg = `⚠️ @${sender.split('@')[0]} *Links are not allowed in this group!*`;
                 }
             }
 
-            // Anti-Media
+            // 2. ANTI-MEDIA DETECTION
             if (global.antiMediaGroups?.has(from)) {
                 if (["imageMessage", "videoMessage", "audioMessage", "documentMessage"].includes(type)) {
                     shouldDelete = true;
-                    warnMsg = `⚠️ @${sender.split('@')[0]} media is not allowed here!`;
+                    warnMsg = `⚠️ @${sender.split('@')[0]} *Media is not allowed in this group!*`;
                 }
             }
 
-            // Anti-Sticker
+            // 3. ANTI-STICKER DETECTION
             if (global.antiStickerGroups?.has(from) && type === "stickerMessage") {
                 shouldDelete = true;
-                warnMsg = `⚠️ @${sender.split('@')[0]} stickers are not allowed here!`;
+                warnMsg = `⚠️ @${sender.split('@')[0]} *Stickers are not allowed in this group!*`;
             }
 
-            // Anti-Spam
-            if (global.antiSpamGroups?.has(from) && body) {
+            // 4. ANTI-SPAM DETECTION (Kicks after 5 messages in 5 seconds)
+            if (global.antiSpamGroups?.has(from)) {
                 if (!global.spamTracker) global.spamTracker = new Map();
                 const spamKey = `${from}_${sender}`;
                 const now = Date.now();
                 let userSpam = global.spamTracker.get(spamKey) || [];
+                
                 userSpam = userSpam.filter(time => now - time < 5000); 
                 userSpam.push(now);
                 global.spamTracker.set(spamKey, userSpam);
 
                 if (userSpam.length > 5) { 
                     shouldDelete = true;
-                    warnMsg = `🚨 @${sender.split('@')[0]} kicked for spamming!`;
+                    warnMsg = `🚨 @${sender.split('@')[0]} *has been kicked for spamming!*`;
                 }
             }
 
+            // EXECUTE THE ACTION
             if (shouldDelete) {
                 try {
+                    // 1. Delete the message
                     await conn.sendMessage(from, { delete: msg.key });
+                    
+                    // 2. Warn or Kick
                     if (warnMsg.includes("kicked")) {
                         await conn.sendMessage(from, { text: warnMsg, mentions: [sender] });
                         await conn.groupParticipantsUpdate(from, [sender], "remove");
@@ -216,8 +224,11 @@ async function handler(conn, m, options = {}) {
                     } else {
                         await conn.sendMessage(from, { text: warnMsg, mentions: [sender] });
                     }
-                    return; // Stop processing further
-                } catch (e) { console.error("Anti-Protection delete failed:", e.message); }
+                    
+                    return; // Stop processing further (don't let the command or AI reply)
+                } catch (e) { 
+                    console.error("Anti-Protection delete failed:", e.message); 
+                }
             }
         }
 
