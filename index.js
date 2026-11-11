@@ -40,7 +40,6 @@ app.post("/api/register", async (req, res) => {
 
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
-
         const role = (email.toLowerCase() === config.adminEmail.toLowerCase()) ? "admin" : "user";
 
         user = new User({ email, password: hashedPassword, role });
@@ -95,11 +94,7 @@ app.get("/api/settings/:phone", authMiddleware, async (req, res) => {
 app.post("/api/settings/:phone", authMiddleware, async (req, res) => {
     try {
         const { commands } = req.body;
-        await Settings.findOneAndUpdate(
-            { phoneNumber: req.params.phone },
-            { $set: { commands } },
-            { upsert: true }
-        );
+        await Settings.findOneAndUpdate({ phoneNumber: req.params.phone }, { $set: { commands } }, { upsert: true });
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -227,45 +222,27 @@ async function bootSocket(sessionId, session, isResuming = false) {
     conn.ev.on('group-participants.update', async (anu) => {
         try {
             const { id, participants, action } = anu;
-            
-            // Fetch group metadata for the name
             const groupMetadata = await conn.groupMetadata(id);
             const groupName = groupMetadata.subject;
 
             for (const participant of participants) {
                 const userJid = participant.id || participant;
                 const userNumber = userJid.split('@')[0];
-                
-                // Fetch profile picture (fallback to empty if not found)
                 let profilePic;
-                try {
-                    profilePic = await conn.profilePictureUrl(userJid, 'image');
-                } catch {
-                    profilePic = 'https://i.ibb.co/6P7Zq6B/avatar.png'; // Default avatar
-                }
+                try { profilePic = await conn.profilePictureUrl(userJid, 'image'); } 
+                catch { profilePic = 'https://i.ibb.co/6P7Zq6B/avatar.png'; }
 
                 if (action === 'add' && global.welcomeGroups.has(id)) {
                     const text = `╭─── • 👋 • ───╮\n   *WELCOME*\n╰─── • 👋 • ───╯\n\nHello @${userNumber}, welcome to *${groupName}*!\n\nPlease read the group rules and enjoy your stay. 😊`;
-                    
-                    await conn.sendMessage(id, { 
-                        image: { url: profilePic }, 
-                        caption: text, 
-                        mentions: [userJid] 
-                    });
+                    await conn.sendMessage(id, { image: { url: profilePic }, caption: text, mentions: [userJid] });
                 }
 
                 if (action === 'remove' && global.goodbyeGroups.has(id)) {
                     const text = `╭─── • 👋 • ───╮\n   *GOODBYE*\n╰─── • 👋 • ───╯\n\nGoodbye @${userNumber}, we hope to see you again soon! 👋`;
-                    
-                    await conn.sendMessage(id, { 
-                        text: text, 
-                        mentions: [userJid] 
-                    });
+                    await conn.sendMessage(id, { text: text, mentions: [userJid] });
                 }
             }
-        } catch (e) {
-            console.error("Welcome/Goodbye error:", e.message);
-        }
+        } catch (e) {}
     });
 
     // CONNECTION UPDATE
@@ -276,6 +253,7 @@ async function bootSocket(sessionId, session, isResuming = false) {
         if (connection === "open") {
             session.socketReady = true;
             session.pairing = null;
+            console.log(`✅ [${sessionId}] connected successfully!`);
             try { await collection.updateOne({ _id: `${sessionId}:meta` }, { $set: { value: { jid: conn.user?.id, linkedAt: Date.now() } } }, { upsert: true }); } catch {}
             try {
                 const cleanNumber = conn.user?.id.split(':')[0].split('@')[0];
@@ -288,6 +266,7 @@ async function bootSocket(sessionId, session, isResuming = false) {
         if (connection === "close") {
             session.socketReady = false;
             const code = lastDisconnect?.error?.output?.statusCode;
+            console.log(`❌ [${sessionId}] disconnected. Code: ${code}`);
             if (code === 401 || code === DisconnectReason.loggedOut) {
                 global.sessions.delete(sessionId);
                 await collection.deleteMany({ _id: { $regex: `^${sessionId}:` } });
@@ -305,7 +284,6 @@ async function bootSocket(sessionId, session, isResuming = false) {
         const from = msg.key.remoteJid;
         if (from.endsWith("@newsletter")) return;
 
-        // FETCH SETTINGS
         let dbSettings = await Settings.findOne({ phoneNumber: sessionId });
         if (!dbSettings) dbSettings = { commands: { autoread: true, autoview: true, autoreact: false, antidelete: true } };
         const cmd = dbSettings.commands;
@@ -362,7 +340,11 @@ async function bootSocket(sessionId, session, isResuming = false) {
             }
         }
 
-        try { await handler(conn, m, { userId: sessionId, config, helpers: {}, services: {}, commandsDir }); } catch (err) {}
+        try { 
+            await handler(conn, m, { userId: sessionId, config, helpers: {}, services: {}, commandsDir }); 
+        } catch (err) {
+            console.error(`[${sessionId}] handler error:`, err.message);
+        }
     });
 
     // ANTI-DELETE
@@ -437,6 +419,9 @@ app.get("/health", (req, res) => {
     res.json({ ok: true, activeSessions: global.sessions.size, dbConnected: mongoose.connection.readyState === 1 });
 });
 
+// ============================================================
+// 🚀 BOOT & RESUME (FIXED AND LOGGED)
+// ============================================================
 app.listen(config.port, () => {
     console.log(`🌐 Web panel running on port ${config.port}`);
     setInterval(() => { const http = require('http'); http.get(`http://localhost:${config.port}/health`, () => {}).on('error', () => {}); }, 1000 * 60 * 20);
@@ -447,21 +432,40 @@ async function resumeAllSessions() {
         await initMongo();
         const c = global.mongoClient.db("xmd303").collection("authState");
         const metas = await c.find({ _id: { $regex: ":meta$" } }).toArray();
+        
         if (metas.length > 0) {
+            console.log(`🔄 Resuming ${metas.length} valid session(s)...`);
             for (const meta of metas) {
                 const sessionId = meta._id.replace(/:meta$/, "");
                 if (global.sessions.has(sessionId)) continue;
                 const session = { conn: null, socketReady: false, pairing: null, pairingNumber: null, lastSeen: 0 };
                 global.sessions.set(sessionId, session);
-                try { await bootSocket(sessionId, session, true); } catch (e) {}
+                try { 
+                    await bootSocket(sessionId, session, true); 
+                } catch (e) {
+                    console.error(`Failed to resume ${sessionId}:`, e.message);
+                }
                 await new Promise(r => setTimeout(r, 2000));
             }
+        } else {
+            console.log(`📭 No linked sessions found. Waiting for new pairings...`);
         }
-    } catch (e) {}
+    } catch (e) {
+        console.log("Error in resume logic:", e.message);
+    }
 }
 
 if (config.mongodb) {
-    mongoose.connect(config.mongodb).then(async () => { await resumeAllSessions(); }).catch(e => { process.exit(1); });
+    mongoose.connect(config.mongodb)
+        .then(async () => { 
+            console.log("✅ Mongoose Connected"); // <--- THIS WAS MISSING
+            await resumeAllSessions();        // <--- THIS WAS MISSING
+        })
+        .catch(e => { 
+            console.error("MongoDB Connection Error:", e.message);
+            process.exit(1); 
+        });
 } else {
+    console.error("MONGODB_URI is missing!");
     process.exit(1);
 }
