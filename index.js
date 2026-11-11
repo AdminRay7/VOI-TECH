@@ -1,5 +1,30 @@
 require("dotenv").config();
 
+// ============================================
+//   Silence Baileys' known log spam
+// ============================================
+const _origConsoleError = console.error.bind(console);
+const _origConsoleWarn  = console.warn.bind(console);
+
+const _SILENCED_PATTERNS = [
+    'Bad MAC', 'Bad RSA', 'doDecryptWhisperMessage', 'decryptWithSessions',
+    'verifyMAC', 'Session error:Error: Bad MAC',
+    'Failed to decrypt message with any known session',
+    'unpadRandomMax16', 'Closing session',
+    'Closing open session in favor of incoming preKey bundle',
+    'Session already closed', 'Removing old closed session'
+];
+
+function _shouldSilence(args) {
+    const first = args[0];
+    if (typeof first !== 'string') return false;
+    return _SILENCED_PATTERNS.some(p => first.includes(p));
+}
+
+console.error = (...args) => { if (!_shouldSilence(args)) _origConsoleError(...args); };
+console.warn  = (...args) => { if (!_shouldSilence(args)) _origConsoleWarn(...args); };
+// ============================================
+
 const express = require("express");
 const path = require("path");
 const mongoose = require("mongoose");
@@ -420,7 +445,7 @@ app.get("/health", (req, res) => {
 });
 
 // ============================================================
-// 🚀 BOOT & RESUME (FIXED AND LOGGED)
+// 🚀 BOOT & RESUME
 // ============================================================
 app.listen(config.port, () => {
     console.log(`🌐 Web panel running on port ${config.port}`);
@@ -458,8 +483,8 @@ async function resumeAllSessions() {
 if (config.mongodb) {
     mongoose.connect(config.mongodb)
         .then(async () => { 
-            console.log("✅ Mongoose Connected"); // <--- THIS WAS MISSING
-            await resumeAllSessions();        // <--- THIS WAS MISSING
+            console.log("✅ Mongoose Connected"); 
+            await resumeAllSessions();        
         })
         .catch(e => { 
             console.error("MongoDB Connection Error:", e.message);
