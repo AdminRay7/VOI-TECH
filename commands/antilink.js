@@ -3,11 +3,10 @@
 // Works session-wide (groups only).
 // Toggle: .antilink on | off | (no args = show state)
 
-const path = require('path');
-const autoToggles = require(path.join(__dirname, '..', 'lib', 'autoToggles'));
-const { fancy } = require(path.join(__dirname, '..', 'lib', 'font'));
-const config = require(path.join(__dirname, '..', 'config'));
-const aiChat = require(path.join(__dirname, '..', 'lib', 'aiChat'));
+const autoToggles = require('../lib/autoToggles');
+const { fancy } = require('../lib/font');
+const config = require('../config');
+const aiChat = require('../lib/aiChat');
 
 // Basic regex to detect if a message contains a link (to save AI quota)
 const URL_REGEX = /(https?:\/\/[^\s]+|www\.[^\s]+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/\S*)?)/i;
@@ -27,9 +26,7 @@ async function isBotGroupAdmin(conn, groupJid) {
         });
         if (!me) return false;
         return me.admin === 'admin' || me.admin === 'superadmin';
-    } catch { 
-        return false; 
-    }
+    } catch { return false; }
 }
 
 async function isGroupAdmin(conn, groupJid, senderJid) {
@@ -40,9 +37,7 @@ async function isGroupAdmin(conn, groupJid, senderJid) {
             bareNum(p.id) === senderBare &&
             (p.admin === 'admin' || p.admin === 'superadmin')
         );
-    } catch { 
-        return false; 
-    }
+    } catch { return false; }
 }
 
 module.exports = {
@@ -55,16 +50,11 @@ module.exports = {
 
     async execute(conn, msg, args, ctx) {
         const { from, isGroup, isOwner, userId } = ctx;
-        
         if (!isOwner) return conn.sendMessage(from, { text: fancy('❌ Owner only.') });
         if (!isGroup)  return conn.sendMessage(from, { text: fancy('❌ Group only command.') });
 
-        // Warn if not admin, but STILL ENABLE IT
-        const botAdmin = await isBotGroupAdmin(conn, from);
-        if (!botAdmin) {
-            await conn.sendMessage(from, { 
-                text: fancy('⚠️ Note: I am not an admin here. I can turn on Anti-Link, but I cannot delete messages until you promote me.') 
-            });
+        if (!(await isBotGroupAdmin(conn, from))) {
+            return conn.sendMessage(from, { text: fancy('❌ I must be a group admin to use this.') });
         }
 
         const action = (args[0] || '').toLowerCase();
@@ -75,14 +65,12 @@ module.exports = {
                 text: fancy(`🔗 Smart Anti-Link: ${on ? '✅ ON' : '❌ OFF'}\n\nUses AI to detect spam links.`)
             }, { quoted: msg });
         }
-        
         if (!['on', 'off'].includes(action)) {
             return conn.sendMessage(from, { text: fancy(`Usage: ${config.prefix}antilink on|off`) });
         }
 
         const value = action === 'on';
         await autoToggles.set(userId, 'antilink', null, value);
-        
         return conn.sendMessage(from, {
             text: fancy(`✅ Smart Anti-Link ${value ? 'ENABLED' : 'DISABLED'}.`)
         }, { quoted: msg });
