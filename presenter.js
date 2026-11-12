@@ -11,35 +11,6 @@ let commandDirRaw = null;
 let loadInFlight = null;
 let loadInFlightDir = null; 
 
-const spamTracker = new Map();
-const SPAM_WINDOW_MS = 5000;
-const SPAM_MAX_HITS = 5;
-const SPAM_TRACKER_TTL = 10 * 60 * 1000; 
-let spamCleanupTimer = null;
-
-function ensureSpamCleanup() {
-    if (spamCleanupTimer) return;
-    spamCleanupTimer = setInterval(() => {
-        const now = Date.now();
-        for (const [key, entry] of spamTracker) {
-            const times = entry?.times || [];
-            if (!times.length || now - times[times.length - 1] > SPAM_TRACKER_TTL) {
-                spamTracker.delete(key);
-            }
-        }
-    }, 60 * 1000);
-    if (typeof spamCleanupTimer.unref === "function") spamCleanupTimer.unref();
-}
-ensureSpamCleanup();
-
-function dispose() {
-    if (spamCleanupTimer) {
-        try { clearInterval(spamCleanupTimer); } catch {}
-        spamCleanupTimer = null;
-    }
-    spamTracker.clear();
-}
-
 function parseJid(input) {
     if (input == null) return { num: "", domain: "", isLid: false, raw: "" };
     const raw = String(input);
@@ -146,7 +117,6 @@ function reloadCommands() {
     cacheLoaded = false;
     loadInFlight = null;
     loadInFlightDir = null;
-    spamTracker.clear();
 
     if (commandDir) loadCommands(commandDir);
     else if (commandDirRaw) loadCommands(commandDirRaw);
@@ -196,9 +166,7 @@ async function handler(conn, m, options = {}) {
         try { services.watchdog?.heartbeat?.(userId); } catch {}
 
         const from      = msg.key.remoteJid;
-        const sender    = msg.key.participant
-            || (msg.key.fromMe ? conn?.user?.id : msg.key.remoteJid)
-            || msg.key.remoteJid;
+        const sender    = msg.key.participant || (msg.key.fromMe ? conn?.user?.id : msg.key.remoteJid) || msg.key.remoteJid;
         const pushname  = msg.pushName || "Unknown";
         const isGroup   = from.endsWith("@g.us");
         const isChannel = from.endsWith("@newsletter");
@@ -213,8 +181,6 @@ async function handler(conn, m, options = {}) {
         const command  = isCmd ? body.slice(prefix.length).trim().split(/\s+/)[0].toLowerCase() : "";
         const args     = isCmd ? body.trim().split(/\s+/).slice(1) : [];
 
-        // 🚨 GOD MODE OWNER CHECK 🚨
-        // If it's fromMe, or matches the OWNER_NUMBER in .env, they are the owner.
         let isOwner = msg.key.fromMe;
         const senderNum = normalizeNumber(sender);
         if (config.ownerNumber) {
@@ -238,7 +204,6 @@ async function handler(conn, m, options = {}) {
             } catch (e) {}
         }
 
-        // 👑 MASTER OWNER OVERRIDE: Force admin to true for the owner
         if (isOwner) {
             isAdmin = true;
         }
@@ -259,75 +224,21 @@ async function handler(conn, m, options = {}) {
         };
 
         // ============================================================
-        // 🛡️ ANTI-PROTECTION ENFORCER
+        // 🤖 ONMESSAGE ROUTING (Runs automated commands like antilink)
         // ============================================================
-        const botIdForSelfCheck = getBotId(conn);
-        const isSelf = msg.key.fromMe && (jidEquals(sender, botIdForSelfCheck) || sender === conn?.user?.id);
+        const executedOnMessage = new Set();
+        for (const [, mod] of commands) {
+            if (executedOnMessage.has(mod)) continue;
+            executedOnMessage.add(mod);
 
-        // We bypass the !isSelf check if it's the owner testing it
-        if (isGroup && (!isSelf || isOwner)) {
-            let shouldDelete = false;
-            let shouldKick = false;
-            let warnMsg = "";
-
-            if (global.antiLinkGroups?.has(from) && body) {
-                const linkRegex = /(https?:\/\/[^\s]+)|(www\.[^\s]+)|(chat\.whatsapp\.com\/[^\s]+)|(t\.me\/[^\s]+)/i;
-                const isKnownCommand = isCmd && commands.has(command);
-                if (!isKnownCommand && linkRegex.test(body)) {
-                    shouldDelete = true;
-                    warnMsg = `⚠️ @${parseJid(sender).num} *Links are not allowed in this group!*`;
-                }
-            }
-
-            if (!shouldDelete && global.antiMediaGroups?.has(from)) {
-                if (["imageMessage", "videoMessage", "audioMessage", "documentMessage"].includes(type)) {
-                    shouldDelete = true;
-                    warnMsg = `⚠️ @${parseJid(sender).num} *Media is not allowed in this group!*`;
-                }
-            }
-
-            if (!shouldDelete && global.antiStickerGroups?.has(from) && type === "stickerMessage") {
-                shouldDelete = true;
-                warnMsg = `⚠️ @${parseJid(sender).num} *Stickers are not allowed in this group!*`;
-            }
-
-            if (!shouldDelete && global.antiSpamGroups?.has(from)) {
-                const spamText = body || getInteractiveReplyId(normalized);
-                if (spamText) {
-                    const spamKey = `${from}_${parseJid(sender).num}_${parseJid(sender).domain}`;
-                    const now = Date.now();
-                    const entry = spamTracker.get(spamKey) || { times: [] };
-                    entry.times = entry.times.filter(t => now - t < SPAM_WINDOW_MS);
-                    entry.times.push(now);
-                    spamTracker.set(spamKey, entry);
-
-                    if (entry.times.length > SPAM_MAX_HITS) {
-                        shouldDelete = true;
-                        shouldKick = true;
-                        warnMsg = `🚨 @${parseJid(sender).num} *has been kicked for spamming!*`;
+            if (typeof mod.onMessage === "function") {
+                try {
+                    const handled = await mod.onMessage(conn, msg, ctx);
+                    if (handled === true) {
+                        return; // Stop processing if the automated command handled it (e.g., deleted a link)
                     }
-                }
-            }
-
-            if (shouldDelete) {
-                if (!botIsAdmin) {
-                    console.log(`Anti-Protection triggered but bot is not admin in ${from}`);
-                } else {
-                    try {
-                        await conn.sendMessage(from, { delete: msg.key });
-                    } catch (e) { }
-                    
-                    try {
-                        if (shouldKick) {
-                            await conn.sendMessage(from, { text: warnMsg, mentions: [sender] });
-                            await conn.groupParticipantsUpdate(from, [sender], "remove");
-                        } else if (warnMsg) {
-                            await conn.sendMessage(from, { text: warnMsg, mentions: [sender] });
-                        }
-                    } catch (e) { } finally {
-                        if (shouldKick) spamTracker.delete(`${from}_${parseJid(sender).num}_${parseJid(sender).domain}`);
-                    }
-                    return;
+                } catch (e) {
+                    console.error(`onMessage error in ${mod.name}:`, e.message);
                 }
             }
         }
@@ -336,13 +247,7 @@ async function handler(conn, m, options = {}) {
             if (await routeButtons(conn, msg, ctx, commands, services, normalized)) return;
         } catch (e) { }
 
-        if (!isCmd) {
-            try {
-                if (await routeGameInput(ctx, services)) return;
-            } catch (e) { }
-        }
-
-        if (!isCmd || !command) return;
+        if (!isCmd) return;
 
         const mod = commands.get(command);
         if (!mod || typeof mod.execute !== "function") return;
@@ -385,33 +290,6 @@ function extractBody(normalized, type) {
     }
 }
 
-function getInteractiveReplyId(normalized) {
-    if (!normalized) return "";
-    return (
-        normalized?.buttonsResponseMessage?.selectedButtonId ||
-        normalized?.templateButtonReplyMessage?.selectedId ||
-        normalized?.listResponseMessage?.singleSelectReply?.selectedRowId ||
-        ""
-    ) || "";
-}
-
-// New robust owner check
-function isOwnerCheck(sender, msg, config) {
-    // 1. If fromMe, it's definitely the linked device owner
-    if (msg.key?.fromMe) return true;
-
-    // 2. Check against .env OWNER_NUMBER
-    if (!config?.ownerNumber) return false;
-    const senderJid = parseJid(sender);
-    const owners = String(config.ownerNumber).split(",").map(s => parseJid(s)).filter(o => o.num);
-    
-    return owners.some(o => {
-        if (o.num !== senderJid.num) return false;
-        if (o.domain && senderJid.domain) return o.domain === senderJid.domain;
-        return true;
-    });
-}
-
 async function routeButtons(conn, msg, ctx, commands, services, normalized) {
     const src = normalized || msg.message || {};
     const buttonId =
@@ -421,26 +299,6 @@ async function routeButtons(conn, msg, ctx, commands, services, normalized) {
 
     if (!buttonId) return false;
     if (!buttonId.startsWith("run_command:")) return false;
-
-    const contextInfo =
-        src?.buttonsResponseMessage?.contextInfo ||
-        src?.templateButtonReplyMessage?.contextInfo ||
-        src?.listResponseMessage?.contextInfo ||
-        null;
-
-    const quotedStanzaId = contextInfo?.stanzaId;
-    const quotedParticipant = contextInfo?.participant;
-
-    let authorized = false;
-    if (services.buttonAuth?.verify) {
-        try {
-            authorized = await services.buttonAuth.verify({ buttonId, quotedStanzaId, quotedParticipant, sender: ctx.sender, from: ctx.from, msg });
-        } catch (e) { authorized = false; }
-    } else {
-        authorized = !!contextInfo;
-    }
-
-    if (!authorized) return true; 
 
     const raw = buttonId.slice("run_command:".length).trim();
     if (!raw) return true;
@@ -464,26 +322,15 @@ async function routeButtons(conn, msg, ctx, commands, services, normalized) {
     return true;
 }
 
-async function routeGameInput(ctx, services) {
-    const fn = services?.gameInput?.handle;
-    if (typeof fn !== "function") return false;
-    try {
-        return await fn(ctx);
-    } catch (e) { return false; }
-}
-
 module.exports = handler;
 module.exports.loadCommands    = loadCommands;
 module.exports.reloadCommands  = reloadCommands;
 module.exports.commandCache    = commandCache;
 module.exports.commandOwners   = commandOwners;
 module.exports.registerCommand = registerCommand;
-module.exports.isOwnerCheck    = isOwnerCheck;
 module.exports.unwrapMessage   = unwrapMessage;
 module.exports.extractBody     = extractBody;
 module.exports.normalizeNumber = normalizeNumber;
 module.exports.parseJid        = parseJid;
 module.exports.jidEquals       = jidEquals;
 module.exports.getBotId        = getBotId;
-module.exports.getInteractiveReplyId = getInteractiveReplyId;
-module.exports.dispose         = dispose;
