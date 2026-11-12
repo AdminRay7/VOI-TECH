@@ -1,34 +1,67 @@
+// commands/anticall.js
+// Anti-call — auto-rejects incoming WhatsApp calls when ON.
+// Toggle: .anticall on | off | (no args = show state)
+// Session-wide (applies to every chat in this session).
+
+const autoToggles = require('../lib/autoToggles');
+const { fancy } = require('../lib/font');
+const config = require('../config');
+
 module.exports = {
-    name: "anticall",
-    category: "settings",
-    aliases: ["ac"],
-    description: "Auto-reject incoming calls",
-    
-    // We set up the listener for this specific connection
+    name: 'anticall',
+    category: 'auto',
+    aliases: ['ac'],
+    description: 'Auto-reject incoming calls when ON',
+    toggleKey: 'anticall',
+    enabled: () => true,
+
     async execute(conn, msg, args, ctx) {
-        return ctx.reply("📞 Anti-call is built into the bot's core and is always active.");
+        const { from, isOwner, userId } = ctx;
+
+        if (!isOwner) {
+            return conn.sendMessage(from, { text: fancy('❌ Owner only.') });
+        }
+
+        const action = (args[0] || '').toLowerCase();
+
+        // show state
+        if (action === '') {
+            const on = await autoToggles.get(userId, 'anticall', null, config.anticall === true);
+            return conn.sendMessage(from, {
+                text: fancy(
+                    `📞 Anti-Call (session-wide)\n\n` +
+                    `Status: ${on ? '✅ ON' : '❌ OFF'}\n` +
+                    `Incoming calls are ${on ? 'auto-rejected' : 'allowed'}`
+                )
+            }, { quoted: msg });
+        }
+
+        if (!['on', 'off'].includes(action)) {
+            return conn.sendMessage(from, { text: fancy(`Usage: ${config.prefix}anticall on|off`) });
+        }
+
+        const value = action === 'on';
+        await autoToggles.set(userId, 'anticall', null, value);
+
+        return conn.sendMessage(from, {
+            text: fancy(`✅ Anti-Call ${value ? 'ENABLED' : 'DISABLED'}.`)
+        }, { quoted: msg });
     },
 
-    // This is a special hook we will call from index.js
-    setupCallListener(conn) {
-        conn.ev.on('call', async (calls) => {
-            for (const call of calls) {
-                if (call.status === 'offer') {
-                    console.log(`📞 Incoming call from ${call.from} - Rejecting...`);
-                    
-                    try {
-                        // 1. Reject the call immediately
-                        await conn.rejectCall(call.id, call.from);
-                        
-                        // 2. Send a message to the caller explaining why
-                        await conn.sendMessage(call.from, { 
-                            text: "⚠️ *Anti-Call is Active* ⚠️\n\nI am a bot and I cannot receive voice or video calls. Please send a text message instead! 😊" 
-                        });
-                    } catch (error) {
-                        console.error("Failed to reject call:", error.message);
-                    }
-                }
+    // ============================================================
+    //   ENFORCEMENT — fired by handler.handleCallEvent()
+    //   Only runs when toggle is ON for the session.
+    // ============================================================
+    async onCall(conn, calls) {
+        for (const call of calls) {
+            if (call.status !== 'offer') continue;
+            try {
+                await conn.rejectCall(call.id, call.from);
+                console.log(`[anticall] rejected call from ${call.from}`);
+            } catch (e) {
+                console.error('[anticall] reject failed:', e.message);
             }
-        });
+        }
+        return true;
     }
 };
