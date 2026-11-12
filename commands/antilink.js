@@ -59,9 +59,10 @@ module.exports = {
         if (!isOwner) return conn.sendMessage(from, { text: fancy('❌ Owner only.') });
         if (!isGroup)  return conn.sendMessage(from, { text: fancy('❌ Group only command.') });
 
+        // Warn if not admin, but STILL ENABLE IT
         const botAdmin = await isBotGroupAdmin(conn, from);
         if (!botAdmin) {
-            return conn.sendMessage(from, { 
+            await conn.sendMessage(from, { 
                 text: fancy('⚠️ Note: I am not an admin here. I can turn on Anti-Link, but I cannot delete messages until you promote me.') 
             });
         }
