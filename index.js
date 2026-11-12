@@ -45,9 +45,7 @@ const {
 } = require("@whiskeysockets/baileys");
 
 const config = require("./config");
-const handler = require("./presenter");
-const aiState = require("./lib/aiState");
-const { getAIReply, getVisionReply } = require("./lib/chatai");
+const handler = require("./presenter"); // Using your new Enterprise Handler
 const User = require("./models/User");
 const Settings = require("./models/Settings");
 
@@ -140,16 +138,8 @@ app.use(express.static(path.join(__dirname, "public"), { extensions: ['html'] })
 // ============================================================
 // BOT & DB INIT
 // ============================================================
-const commandsDir = path.join(__dirname, "commands");
-if (fs.existsSync(commandsDir)) handler.loadCommands(commandsDir);
-
 if (!global.sessions) global.sessions = new Map();
 if (!global.mongoClient) global.mongoClient = null;
-if (!global.messageCache) global.messageCache = new Map();
-if (!global.statusCache) global.statusCache = new Map();
-if (!global.welcomeGroups) global.welcomeGroups = new Set();
-if (!global.goodbyeGroups) global.goodbyeGroups = new Set();
-
 let pairingQueue = Promise.resolve();
 
 async function initMongo() {
@@ -231,43 +221,31 @@ async function bootSocket(sessionId, session, isResuming = false) {
     session.conn = conn;
     conn.ev.on("creds.update", saveCreds);
 
-    // ANTI-CALL
-    conn.ev.on('call', async (calls) => {
-        for (const call of calls) {
-            if (call.status === 'ringing' || call.status === 'offer') {
-                try {
-                    await conn.rejectCall(call.id, call.from);
-                    if (call.status === 'offer') await conn.sendMessage(call.from, { text: `⚠️ Anti-Call is Active. Send a text instead!` });
-                } catch (error) {}
-            }
+    // ============================================================
+    // ROUTE EVENTS TO PRESENTER.JS
+    // ============================================================
+    
+    // 1. Messages
+    conn.ev.on("messages.upsert", async (m) => {
+        try {
+            await handler(conn, m, sessionId);
+        } catch (err) {
+            console.error(`[${sessionId}] handler error:`, err.message);
         }
     });
 
-    // WELCOME & GOODBYE MESSAGES
-    conn.ev.on('group-participants.update', async (anu) => {
+    // 2. Group Updates (Welcome/Goodbye)
+    conn.ev.on('group-participants.update', async (update) => {
         try {
-            const { id, participants, action } = anu;
-            const groupMetadata = await conn.groupMetadata(id);
-            const groupName = groupMetadata.subject;
+            await handler.handleGroupUpdate(conn, update);
+        } catch (e) { console.error("group-participants handler error:", e.message); }
+    });
 
-            for (const participant of participants) {
-                const userJid = participant.id || participant;
-                const userNumber = userJid.split('@')[0];
-                let profilePic;
-                try { profilePic = await conn.profilePictureUrl(userJid, 'image'); } 
-                catch { profilePic = 'https://i.ibb.co/6P7Zq6B/avatar.png'; }
-
-                if (action === 'add' && global.welcomeGroups.has(id)) {
-                    const text = `╭─── • 👋 • ───╮\n   *WELCOME*\n╰─── • 👋 • ───╯\n\nHello @${userNumber}, welcome to *${groupName}*!\n\nPlease read the group rules and enjoy your stay. 😊`;
-                    await conn.sendMessage(id, { image: { url: profilePic }, caption: text, mentions: [userJid] });
-                }
-
-                if (action === 'remove' && global.goodbyeGroups.has(id)) {
-                    const text = `╭─── • 👋 • ───╮\n   *GOODBYE*\n╰─── • 👋 • ───╯\n\nGoodbye @${userNumber}, we hope to see you again soon! 👋`;
-                    await conn.sendMessage(id, { text: text, mentions: [userJid] });
-                }
-            }
-        } catch (e) {}
+    // 3. Calls (Anti-Call)
+    conn.ev.on('call', async (calls) => {
+        try {
+            await handler.handleCallEvent(conn, calls);
+        } catch (e) { console.error("call handler error:", e.message); }
     });
 
     // CONNECTION UPDATE
@@ -302,100 +280,6 @@ async function bootSocket(sessionId, session, isResuming = false) {
         }
     });
 
-    // MESSAGE INTERCEPTOR
-    conn.ev.on("messages.upsert", async (m) => {
-        const msg = m.messages[0];
-        if (!msg.message) return;
-        const from = msg.key.remoteJid;
-        if (from.endsWith("@newsletter")) return;
-
-        let dbSettings = await Settings.findOne({ phoneNumber: sessionId });
-        if (!dbSettings) dbSettings = { commands: { autoread: true, autoview: true, autoreact: false, antidelete: true } };
-        const cmd = dbSettings.commands;
-
-        if (cmd.autoread) { try { await conn.readMessages([msg.key]); } catch (e) {} }
-
-        if (from === "status@broadcast") {
-            if (cmd.autoview) { try { await conn.readMessages([msg.key]); } catch (e) {} }
-            if (cmd.autoreact) {
-                try {
-                    const emojis = ["❤️", "🔥", "💯", "✨", "👑"];
-                    await conn.sendMessage("status@broadcast", { react: { text: emojis[Math.floor(Math.random() * emojis.length)], key: msg.key } });
-                } catch (e) {}
-            }
-            global.statusCache.set(msg.key.id, { msg, sender: msg.key.participant, timestamp: Date.now() });
-            if (global.statusCache.size > 50) global.statusCache.delete(global.statusCache.keys().next().value);
-            return;
-        }
-
-        global.messageCache.set(`${sessionId}_${msg.key.id}`, { msg, timestamp: Date.now() });
-        if (global.messageCache.size > 500) global.messageCache.delete(global.messageCache.keys().next().value);
-
-        const type = Object.keys(msg.message)[0];
-        let body = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || "";
-        const isCmd = body && body.startsWith(config.prefix);
-
-        if (!isCmd && aiState.isEnabled()) {
-            const isFromMe = msg.key.fromMe;
-            const botNumber = conn.user.id.split(':')[0];
-            const senderNumber = (msg.key.participant || from).split('@')[0].split(':')[0];
-            if (!isFromMe && senderNumber !== botNumber && !config.ownerNumber.includes(senderNumber)) {
-                let text = body, imageBuffer = null, mimeType = "image/jpeg";
-                let realMessage = msg.message;
-                if (realMessage?.viewOnceMessageV2) realMessage = realMessage.viewOnceMessageV2.message;
-                if (realMessage?.ephemeralMessage) realMessage = realMessage.ephemeralMessage.message;
-                if (realMessage?.imageMessage) {
-                    try {
-                        imageBuffer = await conn.downloadMediaMessage(msg);
-                        mimeType = realMessage.imageMessage.mimetype || "image/jpeg";
-                        text = realMessage.imageMessage.caption || "Describe this image in detail.";
-                    } catch (err) {}
-                }
-                if (text || imageBuffer) {
-                    try {
-                        await conn.sendPresenceUpdate('composing', from);
-                        await new Promise(r => setTimeout(r, 3000)); 
-                        await conn.sendPresenceUpdate('paused', from);
-                        const botInfoPrompt = `You are ${config.botName}, created by ${config.ownerName}. If asked, say "I am ${config.botName}". Keep answers short.`;
-                        let response = imageBuffer ? await getVisionReply(imageBuffer, mimeType, text, botInfoPrompt) : await getAIReply(text, botInfoPrompt);
-                        if (response && response.trim().length > 0) await conn.sendMessage(from, { text: response.trim() }, { quoted: msg });
-                        return; 
-                    } catch (e) {}
-                }
-            }
-        }
-
-        try { 
-            await handler(conn, m, { userId: sessionId, config, helpers: {}, services: {}, commandsDir }); 
-        } catch (err) {
-            console.error(`[${sessionId}] handler error:`, err.message);
-        }
-    });
-
-    // ANTI-DELETE
-    conn.ev.on("messages.update", async (updates) => {
-        for (const update of updates) {
-            if (update.update?.message === null || update.update?.messageStubType === 1) {
-                const dbSettings = await Settings.findOne({ phoneNumber: sessionId });
-                if (dbSettings && dbSettings.commands.antidelete === false) continue;
-                const cached = global.messageCache.get(`${sessionId}_${update.key.id}`);
-                if (cached && !cached.msg.key.fromMe) {
-                    try {
-                        await conn.sendMessage(update.key.remoteJid, { text: `🚨 *ANTI-DELETE*\nFrom: @${cached.msg.key.participant?.split('@')[0] || cached.msg.key.remoteJid.split('@')[0]}`, mentions: [cached.msg.key.participant || cached.msg.key.remoteJid] });
-                        await conn.sendMessage(update.key.remoteJid, { forward: cached.msg });
-                    } catch (e) {}
-                }
-                const cachedStatus = global.statusCache.get(update.key.id);
-                if (cachedStatus) {
-                    try {
-                        const myJid = conn.user.id.split(':')[0] + "@s.whatsapp.net";
-                        await conn.sendMessage(myJid, { text: `🚨 *DELETED STATUS CAPTURED*\nFrom: @${cachedStatus.sender.split('@')[0]}`, mentions: [cachedStatus.sender] });
-                        await conn.sendMessage(myJid, { forward: cachedStatus.msg });
-                    } catch (e) {}
-                }
-            }
-        }
-    });
     return conn;
 }
 
