@@ -1,4 +1,5 @@
 const axios = require("axios");
+const yts = require("yt-search");
 const config = require("../config");
 
 module.exports = {
@@ -7,8 +8,8 @@ module.exports = {
     aliases: ["song", "music", "ytmp3"],
     description: "Download a song from YouTube",
     async execute(conn, msg, args, ctx) {
-        // Clean up search query
-        if (args[0] && (args[0].toLowerCase() === "play" || args[0].toLowerCase() === "song")) {
+        // Clean up the query (remove the command word if typed twice)
+        if (args[0] && ["play", "song", "music", "ytmp3"].includes(args[0].toLowerCase())) {
             args.shift();
         }
 
@@ -18,34 +19,61 @@ module.exports = {
         await ctx.reply(`🔍 Searching for *${query}*...`);
 
         try {
-            // 1. Search using XTeam API
-            const searchUrl = `${config.APIs.xteam}/youtube?q=${encodeURIComponent(query)}&apikey=${config.APIKeys[config.APIs.xteam]}`;
-            const searchRes = await axios.get(searchUrl);
-
-            if (!searchRes.data || !searchRes.data.result || searchRes.data.result.length === 0) {
-                return ctx.reply("❌ No results found.");
+            // 1. Search YouTube for the video
+            const searchResults = await yts(query);
+            if (!searchResults.videos || searchResults.videos.length === 0) {
+                return ctx.reply("❌ No results found for that query.");
             }
 
-            const video = searchRes.data.result[0];
+            const video = searchResults.videos[0];
             const videoUrl = video.url;
             const title = video.title;
 
-            await ctx.reply(`🎵 *Found:* ${title}\n⏳ Downloading audio, please wait...`);
+            await ctx.reply(`🎵 *Found:* ${title}\n⏳ Fetching audio, please wait...`);
 
-            // 2. Download MP3 using XTeam API
-            const dlUrl = `${config.APIs.xteam}/ytmp3?url=${encodeURIComponent(videoUrl)}&apikey=${config.APIKeys[config.APIs.xteam]}`;
-            const dlRes = await axios.get(dlUrl);
-
-            if (!dlRes.data || !dlRes.data.result || !dlRes.data.result.url) {
-                return ctx.reply("❌ Failed to get download link from API.");
+            // 2. Ask Cobalt API for the MP3 link
+            let downloadUrl = null;
+            try {
+                const response = await axios.post("https://api.cobalt.tools/api/json", {
+                    url: videoUrl,
+                    isAudioOnly: true,
+                    aFormat: "mp3"
+                }, {
+                    headers: { 
+                        "Accept": "application/json", 
+                        "Content-Type": "application/json" 
+                    }
+                });
+                
+                if (response.data && response.data.url) {
+                    downloadUrl = response.data.url;
+                }
+            } catch (apiError) {
+                console.error("Cobalt API Error:", apiError.message);
             }
 
-            const audioUrl = dlRes.data.result.url;
+            // Fallback to a second API if Cobalt fails (rate limit, etc)
+            if (!downloadUrl) {
+                try {
+                    const fallbackRes = await axios.get(`https://api.zenkeymon.xyz/download/ytmp3?url=${encodeURIComponent(videoUrl)}`);
+                    if (fallbackRes.data?.status === true) {
+                        downloadUrl = fallbackRes.data.result.download_url;
+                    }
+                } catch (fallbackError) {
+                    console.error("Fallback API Error:", fallbackError.message);
+                }
+            }
 
-            // 3. Download the actual audio into a Buffer (Bypasses all IP blocks)
-            const audioRes = await axios.get(audioUrl, { 
+            if (!downloadUrl) {
+                return ctx.reply("❌ Failed to get download link. The API might be down. Try again later.");
+            }
+
+            // 3. Download the audio into a Buffer (Bypasses IP blocks)
+            await ctx.reply("📥 Downloading audio to server...");
+            const audioRes = await axios.get(downloadUrl, { 
                 responseType: 'arraybuffer',
-                headers: { 'User-Agent': 'Mozilla/5.0' }
+                headers: { 'User-Agent': 'Mozilla/5.0' },
+                timeout: 60000 // 60 seconds timeout
             });
             
             const audioBuffer = Buffer.from(audioRes.data);
@@ -60,7 +88,7 @@ module.exports = {
 
         } catch (error) {
             console.error("Play command error:", error.message);
-            await ctx.reply("❌ An error occurred while downloading the song. The API might be down.");
+            await ctx.reply("❌ An error occurred while downloading the song.");
         }
     }
 };
