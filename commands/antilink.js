@@ -3,10 +3,11 @@
 // Works session-wide (groups only).
 // Toggle: .antilink on | off | (no args = show state)
 
-const autoToggles = require('../lib/autoToggles');
-const { fancy } = require('../lib/font');
-const config = require('../config');
-const aiChat = require('../lib/aiChat');
+const path = require('path');
+const autoToggles = require(path.join(__dirname, '..', 'lib', 'autoToggles'));
+const { fancy } = require(path.join(__dirname, '..', 'lib', 'font'));
+const config = require(path.join(__dirname, '..', 'config'));
+const aiChat = require(path.join(__dirname, '..', 'lib', 'aiChat'));
 
 // Basic regex to detect if a message contains a link (to save AI quota)
 const URL_REGEX = /(https?:\/\/[^\s]+|www\.[^\s]+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/\S*)?)/i;
