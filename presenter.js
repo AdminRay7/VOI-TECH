@@ -191,23 +191,34 @@ module.exports = async (conn, m, userId = "default") => {
         const command   = isCmd ? body.slice(currentPrefix.length).trim().split(' ')[0].toLowerCase() : '';
         const args      = body ? body.trim().split(/ +/).slice(1) : [];
 
-        // Owner detection
+        // 👑 MASTER OVERRIDE: Linked number is ALWAYS the owner.
         const senderBare   = String(sender).split('@')[0].split(':')[0].replace(/\D/g, '');
         const sessionJid   = conn.user?.id || '';
         const sessionBare  = sessionJid.split('@')[0].split(':')[0].replace(/\D/g, '');
         const ownerCfgBare = String(config.ownerNumber || '').replace(/\D/g, '');
 
-        const isOwner =
-            msg.key.fromMe === true ||
-            (senderBare && senderBare === ownerCfgBare) ||
-            (senderBare && senderBare === sessionBare);
+        const isOwner = 
+            msg.key.fromMe === true || 
+            (senderBare && senderBare === sessionBare) || 
+            (senderBare && senderBare === ownerCfgBare);
+
+        // Determine if Bot is Admin in the group
+        let botIsAdmin = false;
+        if (isGroup) {
+            try {
+                const meta = await conn.groupMetadata(from);
+                const botId = sessionBare;
+                const me = meta.participants.find(p => p.id.includes(botId));
+                botIsAdmin = me?.admin === 'admin' || me?.admin === 'superadmin';
+            } catch (e) {}
+        }
 
         try { loadCommands(false); } catch {}
 
         const cmdCtx = {
             from, sender, fancy, isOwner, pushname, config, conn, msg,
             userId, isGroup, isChannel, isStatus, body, args, command, prefix: currentPrefix, botName: currentBotName, isCmd,
-            senderBare, sessionBare, ownerCfgBare
+            senderBare, sessionBare, ownerCfgBare, botIsAdmin
         };
 
         // ============================================================
@@ -280,7 +291,7 @@ module.exports = async (conn, m, userId = "default") => {
         }
 
         // ============================================================
-        //   AUTO ENFORCEMENT LAYER
+        //   AUTO ENFORCEMENT LAYER (Anti-Link, Anti-Media, etc.)
         // ============================================================
         for (const [, mod] of autoCache) {
             if (typeof mod.onMessage !== 'function') continue;
