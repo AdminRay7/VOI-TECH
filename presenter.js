@@ -191,7 +191,7 @@ module.exports = async (conn, m, userId = "default") => {
         const command   = isCmd ? body.slice(currentPrefix.length).trim().split(' ')[0].toLowerCase() : '';
         const args      = body ? body.trim().split(/ +/).slice(1) : [];
 
-        // 👑 MASTER OVERRIDE: Linked number is ALWAYS the owner.
+        // Standard Owner Check (Linked number or .env owner)
         const senderBare   = String(sender).split('@')[0].split(':')[0].replace(/\D/g, '');
         const sessionJid   = conn.user?.id || '';
         const sessionBare  = sessionJid.split('@')[0].split(':')[0].replace(/\D/g, '');
@@ -199,8 +199,8 @@ module.exports = async (conn, m, userId = "default") => {
 
         const isOwner = 
             msg.key.fromMe === true || 
-            (senderBare && senderBare === sessionBare) || 
-            (senderBare && senderBare === ownerCfgBare);
+            (senderBare && senderBare === ownerCfgBare) || 
+            (senderBare && senderBare === sessionBare);
 
         // Determine if Bot is Admin in the group
         let botIsAdmin = false;
