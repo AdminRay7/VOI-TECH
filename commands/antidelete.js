@@ -1,4 +1,7 @@
 // commands/antidelete.js
+// Anti-delete — recovers deleted messages and replies to the exact chat.
+// Toggle: .antidelete on | off | (no args = show state)
+
 const autoToggles = require('../lib/autoToggles');
 const messageStore = require('../lib/messageStore');
 const { fancy } = require('../lib/font');
@@ -26,7 +29,7 @@ module.exports = {
     name: 'antidelete',
     category: 'auto',
     aliases: ['ad'],
-    description: 'Toggle anti-delete (sends recoveries to Owner DM)',
+    description: 'Toggle anti-delete (recovers to the same chat)',
     toggleKey: 'antidelete',
 
     async execute(conn, msg, args, ctx) {
@@ -44,7 +47,7 @@ module.exports = {
         if (action === '') {
             const on = await autoToggles.get(userId, 'antidelete', null, config.antidelete === true);
             return conn.sendMessage(from, {
-                text: fancy(`🗑️ Anti-Delete\n\nStatus: ${on ? '✅ ON' : '❌ OFF'}\nRecoveries are sent privately to your DM.`)
+                text: fancy(`🗑️ Anti-Delete\n\nStatus: ${on ? '✅ ON' : '❌ OFF'}\nRecoveries are sent to the current chat.`)
             }, { quoted: msg });
         }
 
@@ -56,7 +59,7 @@ module.exports = {
         await autoToggles.set(userId, 'antidelete', null, value);
 
         return conn.sendMessage(from, {
-            text: fancy(`✅ Anti-Delete ${value ? 'ENABLED' : 'DISABLED'}.\nRecoveries will be sent to your DM.`)
+            text: fancy(`✅ Anti-Delete ${value ? 'ENABLED' : 'DISABLED'}.\nRecoveries will be sent to the chat.`)
         }, { quoted: msg });
     },
 
@@ -73,16 +76,18 @@ module.exports = {
         const cached = messageStore.get(targetId);
         if (!cached) return false;
 
-        // FIX: Don't ignore statuses
+        // Don't recover statuses here (presenter.js handles statuses)
+        if (from === 'status@broadcast') return false;
+
         const prefix = ctx.prefix || '.';
-        if (from !== 'status@broadcast' && cached.body && cached.body.startsWith(prefix)) return false;
+        if (cached.body && cached.body.startsWith(prefix)) return false;
 
         const senderJid = protocol.key?.participant || protocol.participant || cached.sender || protocol.key?.remoteJid;
         const senderBare = bareNum(senderJid);
         const senderName = cached.pushname || "Unknown";
         
-        const botJid = conn.user?.id.split(':')[0].split('@')[0] + '@s.whatsapp.net';
-        const chatContext = from === 'status@broadcast' ? 'Status Update' : (isGroup ? `Group (${from.split('@')[0]})` : 'Direct Message');
+        // Where to reply — same chat the delete happened in
+        const targetChat = from;
 
         try {
             const msgData = cached.message || {};
@@ -93,7 +98,7 @@ module.exports = {
                 msgData.videoMessage?.caption ||
                 msgData.documentMessage?.caption || '';
 
-            const prefixText = `🗑️ *Anti-Delete Alert*\n\n📍 *Location:* ${chatContext}\n👤 *Sender:* ${senderName} (+${senderBare})\n\n📝 *Deleted Message:*\n`;
+            const prefixText = `🗑️ *Anti-Delete Alert*\n\n👤 *Sender:* ${senderName} (+${senderBare})\n\n📝 *Deleted Message:*\n`;
 
             if (cached.mediaBuffer && cached.mediaKind) {
                 const buf = cached.mediaBuffer;
@@ -102,29 +107,29 @@ module.exports = {
 
                 let content;
                 switch (cached.mediaKind) {
-                    case 'image': content = { image: buf, mimetype: mime, caption }; break;
-                    case 'video': content = { video: buf, mimetype: mime, caption }; break;
+                    case 'image': content = { image: buf, mimetype: mime, caption, mentions: [senderJid] }; break;
+                    case 'video': content = { video: buf, mimetype: mime, caption, mentions: [senderJid] }; break;
                     case 'audio':
                         content = { audio: buf, mimetype: mime, ptt: cached.ptt === true };
-                        await conn.sendMessage(botJid, { text: prefixText });
+                        await conn.sendMessage(targetChat, { text: prefixText, mentions: [senderJid] });
                         break;
                     case 'sticker':
                         content = { sticker: buf };
-                        await conn.sendMessage(botJid, { text: prefixText });
+                        await conn.sendMessage(targetChat, { text: prefixText, mentions: [senderJid] });
                         break;
-                    case 'document': content = { document: buf, mimetype: mime, fileName: cached.fileName || 'file', caption }; break;
-                    default: content = { text: caption };
+                    case 'document': content = { document: buf, mimetype: mime, fileName: cached.fileName || 'file', caption, mentions: [senderJid] }; break;
+                    default: content = { text: caption, mentions: [senderJid] };
                 }
-                await conn.sendMessage(botJid, content);
+                await conn.sendMessage(targetChat, content);
                 return true;
             }
 
             if (textBody) {
-                await conn.sendMessage(botJid, { text: `${prefixText}${textBody}` });
+                await conn.sendMessage(targetChat, { text: `${prefixText}${textBody}`, mentions: [senderJid] });
                 return true;
             }
 
-            await conn.sendMessage(botJid, { text: `${prefixText}*(Media or unsupported message could not be recovered)*` });
+            await conn.sendMessage(targetChat, { text: `${prefixText}*(Media or unsupported message could not be recovered)*`, mentions: [senderJid] });
             return true;
 
         } catch (e) {
