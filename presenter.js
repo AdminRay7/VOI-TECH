@@ -1,5 +1,5 @@
 // ============================================================
-//   303-XMD — presenter.js  (bug-fixed)
+//   303-XMD — presenter.js (FULLY FIXED)
 // ============================================================
 const fs = require('fs-extra');
 const path = require('path');
@@ -7,7 +7,7 @@ const axios = require('axios');
 const mongoose = require('mongoose');
 const config = require('./config');
 const { fancy } = require('./lib/font');
-const { User, ChannelSubscriber, ChannelPost, SessionSettings } = require('./database/models');
+const { User, ChannelSubscriber, ChannelPost, SessionSettings } = require('./database/models'); 
 const messageStore = require('./lib/messageStore');
 const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
 const analytics = require('./lib/analytics');
@@ -46,7 +46,7 @@ const commandCache = new Map();
 const autoCache = new Map();
 let folderSignature = '';
 let lastScan = 0;
-let isLoading = false; // FIX #11: lock to prevent concurrent reloads
+let isLoading = false;
 const RESCAN_DEBOUNCE_MS = 2000;
 
 function computeFolderSignature(dir) {
@@ -65,7 +65,6 @@ function computeFolderSignature(dir) {
 }
 
 function loadCommands(force = false) {
-    // FIX #11: prevent re-entrant reload while a load is in progress
     if (isLoading) return false;
     const now = Date.now();
     if (!force && now - lastScan < RESCAN_DEBOUNCE_MS) return false;
@@ -78,8 +77,6 @@ function loadCommands(force = false) {
     isLoading = true;
     try {
         folderSignature = sig;
-
-        // Build new caches first, then swap atomically (FIX #11/#12)
         const newCommandCache = new Map();
         const newAutoCache = new Map();
 
@@ -117,7 +114,6 @@ function loadCommands(force = false) {
         };
         walk(COMMANDS_DIR);
 
-        // Atomic swap
         commandCache.clear();
         for (const [k, v] of newCommandCache) commandCache.set(k, v);
         autoCache.clear();
@@ -134,8 +130,7 @@ loadCommands(true);
 setInterval(() => { try { loadCommands(false); } catch (e) { /* swallow */ } }, 3000).unref();
 
 // ================= DEBOUNCED USER SAVES (atomic) =================
-// FIX #4 / #23: use atomic $inc instead of holding Mongoose docs
-const pendingUserOps = new Map(); // jid -> { inc: number, lastActive, name, sessionId, created }
+const pendingUserOps = new Map();
 
 function scheduleUserActivity({ jid, name, sessionId }) {
     const cur = pendingUserOps.get(jid) || { inc: 0, name, sessionId };
@@ -168,6 +163,7 @@ setInterval(async () => {
 // ================= SUBSCRIBER CACHE =================
 const subscriberCache = new Set();
 let subscriberCacheLastRefresh = 0;
+
 async function isSubscribed(jid) {
     if (Date.now() - subscriberCacheLastRefresh > 10 * 60 * 1000) {
         subscriberCache.clear();
@@ -179,7 +175,6 @@ async function isSubscribed(jid) {
     return !!sub;
 }
 
-// FIX #14: upsert instead of create to avoid duplicate subscriber docs
 async function ensureSubscribed(jid, pushname) {
     try {
         await ChannelSubscriber.updateOne(
@@ -202,7 +197,6 @@ async function routeButtonInteraction(conn, msg, ctx) {
         msg.message?.listResponseMessage?.singleSelectReply?.selectedRowId;
     if (!buttonId) return false;
 
-    // FIX #12: snapshot cache to avoid mutation-during-iteration
     const snapshot = [...commandCache.values()];
     const seen = new Set();
     for (const mod of snapshot) {
@@ -211,7 +205,6 @@ async function routeButtonInteraction(conn, msg, ctx) {
         if (typeof mod.handleButton === 'function') {
             try {
                 const handled = await mod.handleButton(conn, msg, buttonId, ctx);
-                // FIX #1/#13: only `true` means handled — `undefined` must NOT short-circuit
                 if (handled === true) return true;
             } catch (e) { console.error("handleButton:", e.message); }
         }
@@ -235,9 +228,6 @@ async function getSessionMode(sessionId) {
         const doc = await SessionMode.findOne({ sessionId }).lean();
         return doc ? doc.mode : (config.workMode || 'public');
     } catch (e) {
-        // FIX #15: fail-closed — if DB errors, respect the *safe* default.
-        // Return 'private' only if global config says private; otherwise return config.workMode,
-        // but never silently flip a private session to public.
         return config.workMode === 'private' ? 'private' : (config.workMode || 'public');
     }
 }
@@ -255,7 +245,6 @@ module.exports = async (conn, m, userId = "default") => {
             customSettings = await SessionSettings.findOne({ sessionId: userId }).lean() || {};
         } catch (e) {}
 
-        // FIX #25: use ?? so empty-string prefix is respected
         const currentPrefix = customSettings.prefix ?? config.prefix;
         const currentBotName = customSettings.botName || config.botName;
 
@@ -295,16 +284,21 @@ module.exports = async (conn, m, userId = "default") => {
             console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
         }
 
-        // Owner detection
-        const senderBare   = bareJid(sender);
-        const sessionJid   = conn.user?.id || '';
-        const sessionBare  = bareJid(sessionJid);
-        const ownerCfgBare = String(config.ownerNumber || '').replace(/\D/g, '');
+        // ============================================================
+        //   ROBUST OWNER DETECTION (Multi-User & LID Supported)
+        // ============================================================
+        const senderBare     = bareJid(sender);
+        const sessionJid     = conn.user?.id || '';
+        const sessionLid     = conn.user?.lid || ''; 
+        const sessionBare    = bareJid(sessionJid);
+        const sessionLidBare = bareJid(sessionLid);
+        const ownerCfgBare   = bareJid(config.ownerNumber);
 
         const isOwner =
-            msg.key.fromMe === true ||
-            (senderBare && senderBare === ownerCfgBare) ||
-            (senderBare && senderBare === sessionBare);
+            msg.key.fromMe === true ||                                     
+            (senderBare && ownerCfgBare && senderBare === ownerCfgBare) || 
+            (senderBare && sessionBare && senderBare === sessionBare) ||   
+            (senderBare && sessionLidBare && senderBare === sessionLidBare); 
 
         // ============================================================
         // 🛡️ GROUP ADMIN DETECTION
@@ -313,11 +307,9 @@ module.exports = async (conn, m, userId = "default") => {
         if (isGroup) {
             try {
                 const meta = await conn.groupMetadata(from);
-                // FIX #2: normalize participant IDs before comparing
                 const participant = meta.participants.find(p => {
                     const pid = String(p.id || '');
-                    return pid === sender ||
-                           bareJid(pid) === senderBare;
+                    return pid === sender || bareJid(pid) === senderBare;
                 });
                 isGroupAdmin = participant?.admin === 'admin' || participant?.admin === 'superadmin';
             } catch (e) {}
@@ -356,12 +348,8 @@ module.exports = async (conn, m, userId = "default") => {
                     mediaKind = info.kind;
                     mediaMime = info.mime || 'application/octet-stream';
 
-                    if (type === 'audioMessage') {
-                        ptt = msg.message.audioMessage?.ptt === true;
-                    }
-                    if (type === 'documentMessage') {
-                        fileName = msg.message.documentMessage?.fileName || 'file';
-                    }
+                    if (type === 'audioMessage') ptt = msg.message.audioMessage?.ptt === true;
+                    if (type === 'documentMessage') fileName = msg.message.documentMessage?.fileName || 'file';
 
                     try {
                         const stream = await downloadContentFromMessage(msg.message[type], mediaKind);
@@ -380,21 +368,8 @@ module.exports = async (conn, m, userId = "default") => {
                 }
 
                 messageStore.save(msg.key.id, {
-                    key: msg.key,
-                    message: msg.message,
-                    type,
-                    body,
-                    sender,
-                    pushname,
-                    from,
-                    isGroup,
-                    userId,
-                    mediaBuffer,
-                    mediaMime,
-                    mediaKind,
-                    fileName,
-                    ptt,
-                    timestamp: Date.now()
+                    key: msg.key, message: msg.message, type, body, sender, pushname, from,
+                    isGroup, userId, mediaBuffer, mediaMime, mediaKind, fileName, ptt, timestamp: Date.now()
                 });
             } catch (e) {
                 console.error('[cache] save failed:', e.message);
@@ -404,7 +379,6 @@ module.exports = async (conn, m, userId = "default") => {
         // ============================================================
         //   AUTO ENFORCEMENT LAYER
         // ============================================================
-        // FIX #12: snapshot to prevent hot-reload mutations mid-iteration
         const autoSnapshot = [...autoCache.values()];
         for (const mod of autoSnapshot) {
             if (typeof mod.onMessage !== 'function') continue;
@@ -432,8 +406,6 @@ module.exports = async (conn, m, userId = "default") => {
         if (isChannel) {
             const isTarget = config.newsletterJid && from === config.newsletterJid;
             if (!isTarget) return;
-
-            // FIX #18: ignore self-originated channel messages to avoid re-reacting on reconnect
             if (msg.key.fromMe) return;
 
             const postText =
@@ -467,7 +439,6 @@ module.exports = async (conn, m, userId = "default") => {
                 } catch (e) { console.error("Channel react:", e.message); }
             }
 
-            // FIX #24: dedupe forward targets
             const targets = new Set(config.forwardChannelTo || []);
             if (config.ownerNumber) targets.add(config.ownerNumber + '@s.whatsapp.net');
             for (const t of targets) {
@@ -493,7 +464,7 @@ module.exports = async (conn, m, userId = "default") => {
         if (isStatus) return;
 
         // ============================================================
-        //   PER-SESSION WORK MODE CHECK (fail-closed)
+        //   PER-SESSION WORK MODE CHECK
         // ============================================================
         if (!isOwner) {
             const actualMode = await getSessionMode(userId);
@@ -510,14 +481,12 @@ module.exports = async (conn, m, userId = "default") => {
         if (!isOwner && !isGroup && config.channelLink) {
             const subbed = await isSubscribed(sender);
             if (!subbed) {
-                // FIX #14: idempotent upsert
                 await ensureSubscribed(sender, pushname);
                 await conn.sendMessage(from, { text: fancy(`✅ Auto-subscribed!\n\n🔗 ${config.channelLink}`) });
             }
         }
 
         if (config.autoSave && !isOwner && !isGroup) {
-            // FIX #4: atomic $inc via debounced buffer
             scheduleUserActivity({ jid: sender, name: pushname, sessionId: userId });
         }
 
@@ -529,7 +498,6 @@ module.exports = async (conn, m, userId = "default") => {
                 let success = true;
                 let errorMsg = null;
 
-                // FIX #22: cancellable timeout so command stops on timeout
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 60000);
                 try {
@@ -555,7 +523,7 @@ module.exports = async (conn, m, userId = "default") => {
         }
 
         // ============================================================
-        //   AI
+        //   AI (Only for non-commands and non-owners)
         // ============================================================
         else if (!isCmd && !isOwner) {
             const aiOn     = aiSettings.isEnabledCached();
@@ -581,8 +549,6 @@ module.exports = async (conn, m, userId = "default") => {
                     const transcript = await aiChat.transcribeAudio(buffer);
                     if (!transcript) throw new Error("Could not understand audio");
 
-                    console.log(`[voice-ai] Transcribed: "${transcript}"`);
-
                     let prompt = transcript;
                     if (isGroup) {
                         humanChat.pushContext(from, pushname || String(sender).split("@")[0], transcript);
@@ -597,11 +563,7 @@ module.exports = async (conn, m, userId = "default") => {
                         const audioBuffer = await aiChat.textToSpeech(finalReply);
 
                         if (audioBuffer) {
-                            await conn.sendMessage(from, {
-                                audio: audioBuffer,
-                                mimetype: 'audio/mp4',
-                                ptt: true
-                            }, { quoted: msg });
+                            await conn.sendMessage(from, { audio: audioBuffer, mimetype: 'audio/mp4', ptt: true }, { quoted: msg });
                         } else {
                             await conn.sendMessage(from, { text: finalReply }, { quoted: msg });
                         }
@@ -614,13 +576,12 @@ module.exports = async (conn, m, userId = "default") => {
 
             if (type === "imageMessage") {
                 try {
-                    // FIX #3/#17: require a caption OR reply-to-bot context to trigger paid vision calls
                     const caption = (msg.message.imageMessage?.caption || "").trim();
                     const replied = msg.message.imageMessage?.contextInfo?.quotedMessage;
                     const repliedToBot = !!(replied && msg.message.imageMessage?.contextInfo?.participant &&
                         bareJid(msg.message.imageMessage.contextInfo.participant) === sessionBare);
 
-                    if (!caption && !repliedToBot) return;
+                    if (!caption && !repliedToBot) return; // Don't run vision on every random image
 
                     const stream = await downloadContentFromMessage(msg.message.imageMessage, "image");
                     const chunks = [];
@@ -633,7 +594,6 @@ module.exports = async (conn, m, userId = "default") => {
                     }
                     const buffer = Buffer.concat(chunks);
 
-                    // FIX #7/#8: use actual mimetype, not hardcoded jpeg
                     const mime = msg.message.imageMessage?.mimetype || "image/jpeg";
                     aiVision.setSessionImage(from, buffer, mime);
 
@@ -642,7 +602,6 @@ module.exports = async (conn, m, userId = "default") => {
                     await new Promise(r => setTimeout(r, delay));
 
                     const reply = await aiVision.describePhoto(buffer, mime, caption, null);
-
                     if (reply) await conn.sendMessage(from, { text: reply }, { quoted: msg });
                 } catch (e) { console.error("[vision] photo error:", e.message); }
                 return;
@@ -651,11 +610,10 @@ module.exports = async (conn, m, userId = "default") => {
             if (type === "conversation" || type === "extendedTextMessage") {
                 if (!body || !body.trim()) return;
                 if (humanChat.hasReplied(msg.key.id)) return;
-
+                
                 let finalPrompt = body;
                 const bibleRegex = /\b(?:(?:1|2|3)\s?)?(?:Genesis|Exodus|Leviticus|Numbers|Deuteronomy|Joshua|Judges|Ruth|(?:1|2)\s?Samuel|(?:1|2)\s?Kings|(?:1|2)\s?Chronicles|Ezra|Nehemiah|Esther|Job|Psalms?|Proverbs?|Ecclesiastes|Song of Solomon|Isaiah|Jeremiah|Lamentations|Ezekiel|Daniel|Hosea|Joel|Amos|Obadiah|Jonah|Micah|Nahum|Habakkuk|Zephaniah|Haggai|Zechariah|Malachi|Matthew|Mark|Luke|John|Acts|Romans|(?:1|2)\s?Corinthians|Galatians|Ephesians|Philippians|Colossians|(?:1|2)\s?Thessalonians|(?:1|2)\s?Timothy|Titus|Philemon|Hebrews|James|(?:1|2)\s?Peter|Jude|Revelation)\s+\d+:\d+(?:-\d+)?\b/i;
 
-                // FIX #16: require a word-boundary and at least a space before chapter
                 const bibleMatch = body.match(bibleRegex);
 
                 if (bibleMatch) {
@@ -684,7 +642,6 @@ Instruction: Acknowledge their verse and respond naturally using the exact text 
                 try {
                     let reply;
                     if (stored && stored.buffer) {
-                        // FIX #7: pass through stored mime
                         reply = await aiVision.answerAboutPhoto(stored.buffer, stored.mime, finalPrompt, null);
                         aiVision.setSessionImage(from, stored.buffer, stored.mime);
                     } else {
@@ -715,7 +672,6 @@ Instruction: Acknowledge their verse and respond naturally using the exact text 
 // ============================================================
 //   GROUP / CALL EVENT HOOKS
 // ============================================================
-// FIX #10 / #3: hooks now accept optional sessionId so per-session toggles match
 module.exports.handleGroupUpdate = async (conn, update, sessionId = "default") => {
     try {
         const { id: groupJid, participants, action } = update;
@@ -744,7 +700,6 @@ module.exports.handleCallEvent = async (conn, calls, sessionId = "default") => {
     for (const mod of snapshot) {
         if (!mod.toggleKey) continue;
         if (typeof mod.onCall !== 'function') continue;
-        // FIX #5: apply toggle check consistently for onCall (was previously unconditional)
         try {
             const on = await autoToggles.get(sessionId, mod.toggleKey, null, false);
             if (!on) continue;
