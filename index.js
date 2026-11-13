@@ -45,7 +45,7 @@ const {
 } = require("@whiskeysockets/baileys");
 
 const config = require("./config");
-const handler = require("./presenter"); // Using your new Enterprise Handler
+const handler = require("./presenter"); // Your Enterprise Handler
 const User = require("./models/User");
 const Settings = require("./models/Settings");
 
@@ -152,7 +152,9 @@ async function initMongo() {
 
 async function useMongoDBAuthState(collection, sessionId) {
     const writeData = async (data, id) => {
-        try { await collection.updateOne({ _id: id }, { $set: { data: JSON.parse(JSON.stringify(data, BufferJSON.replacer)) } }, { upsert: true }); } catch (error) {}
+        try { 
+            await collection.updateOne({ _id: id }, { $set: { data: JSON.parse(JSON.stringify(data, BufferJSON.replacer)) } }, { upsert: true }); 
+        } catch (error) { console.error("writeData error:", error.message); }
     };
     const readData = async (id) => {
         try {
@@ -164,8 +166,10 @@ async function useMongoDBAuthState(collection, sessionId) {
     const removeData = async (id) => {
         try { await collection.deleteOne({ _id: id }); } catch (error) {}
     };
+    
     const credsId = `${sessionId}:creds`;
     const creds = (await readData(credsId)) || initAuthCreds();
+    
     return {
         state: {
             creds,
@@ -234,17 +238,19 @@ async function bootSocket(sessionId, session, isResuming = false) {
         }
     });
 
-    // 2. Group Updates (Welcome/Goodbye)
+    // 2. Group Updates (Welcome/Goodbye, Antilink)
     conn.ev.on('group-participants.update', async (update) => {
         try {
-            await handler.handleGroupUpdate(conn, update);
+            // FIX: Pass sessionId so auto-toggles match correctly
+            await handler.handleGroupUpdate(conn, update, sessionId);
         } catch (e) { console.error("group-participants handler error:", e.message); }
     });
 
     // 3. Calls (Anti-Call)
     conn.ev.on('call', async (calls) => {
         try {
-            await handler.handleCallEvent(conn, calls);
+            // FIX: Pass sessionId
+            await handler.handleCallEvent(conn, calls, sessionId);
         } catch (e) { console.error("call handler error:", e.message); }
     });
 
@@ -257,7 +263,10 @@ async function bootSocket(sessionId, session, isResuming = false) {
             session.socketReady = true;
             session.pairing = null;
             console.log(`✅ [${sessionId}] connected successfully!`);
-            try { await collection.updateOne({ _id: `${sessionId}:meta` }, { $set: { value: { jid: conn.user?.id, linkedAt: Date.now() } } }, { upsert: true }); } catch {}
+            try { 
+                await collection.updateOne({ _id: `${sessionId}:meta` }, { $set: { value: { jid: conn.user?.id, linkedAt: Date.now() } } }, { upsert: true }); 
+            } catch {}
+            
             try {
                 const cleanNumber = conn.user?.id.split(':')[0].split('@')[0];
                 const jid = `${cleanNumber}@s.whatsapp.net`;
@@ -270,13 +279,19 @@ async function bootSocket(sessionId, session, isResuming = false) {
             session.socketReady = false;
             const code = lastDisconnect?.error?.output?.statusCode;
             console.log(`❌ [${sessionId}] disconnected. Code: ${code}`);
+            
             if (code === 401 || code === DisconnectReason.loggedOut) {
                 global.sessions.delete(sessionId);
                 await collection.deleteMany({ _id: { $regex: `^${sessionId}:` } });
                 return;
             }
             if (code === 440) return;
-            setTimeout(() => { if (global.sessions.has(sessionId)) bootSocket(sessionId, session, true).catch(e => {}); }, 5000);
+            
+            setTimeout(() => { 
+                if (global.sessions.has(sessionId)) {
+                    bootSocket(sessionId, session, true).catch(e => {}); 
+                }
+            }, 5000);
         }
     });
 
@@ -296,15 +311,19 @@ async function requestPairingCode(sessionId, phoneNumber) {
     }
 
     const deadline = Date.now() + 30000;
-    while (!session.socketReady && Date.now() < deadline) { await new Promise(r => setTimeout(r, 500)); }
+    while (!session.socketReady && Date.now() < deadline) { 
+        await new Promise(r => setTimeout(r, 500)); 
+    }
     if (!session.socketReady) throw new Error("Socket busy. Try again.");
 
     let code;
-    try { code = await session.conn.requestPairingCode(phoneNumber); } 
-    catch (e) {
+    try { 
+        code = await session.conn.requestPairingCode(phoneNumber); 
+    } catch (e) {
         await new Promise(r => setTimeout(r, 2000));
         code = await session.conn.requestPairingCode(phoneNumber);
     }
+    
     const formatted = code.match(/.{1,4}/g)?.join("-") || code;
     session.pairing = formatted;
     session.pairingNumber = phoneNumber;
@@ -333,7 +352,11 @@ app.get("/health", (req, res) => {
 // ============================================================
 app.listen(config.port, () => {
     console.log(`🌐 Web panel running on port ${config.port}`);
-    setInterval(() => { const http = require('http'); http.get(`http://localhost:${config.port}/health`, () => {}).on('error', () => {}); }, 1000 * 60 * 20);
+    // Keep-awake ping
+    setInterval(() => { 
+        const http = require('http'); 
+        http.get(`http://localhost:${config.port}/health`, () => {}).on('error', () => {}); 
+    }, 1000 * 60 * 20);
 });
 
 async function resumeAllSessions() {
@@ -347,13 +370,16 @@ async function resumeAllSessions() {
             for (const meta of metas) {
                 const sessionId = meta._id.replace(/:meta$/, "");
                 if (global.sessions.has(sessionId)) continue;
+                
                 const session = { conn: null, socketReady: false, pairing: null, pairingNumber: null, lastSeen: 0 };
                 global.sessions.set(sessionId, session);
+                
                 try { 
                     await bootSocket(sessionId, session, true); 
                 } catch (e) {
                     console.error(`Failed to resume ${sessionId}:`, e.message);
                 }
+                // Small delay between boots to prevent rate-limiting from WhatsApp
                 await new Promise(r => setTimeout(r, 2000));
             }
         } else {
