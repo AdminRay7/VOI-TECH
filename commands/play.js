@@ -1,6 +1,5 @@
 const axios = require("axios");
 const yts = require("yt-search");
-const config = require("../config");
 
 module.exports = {
     name: "play",
@@ -8,28 +7,30 @@ module.exports = {
     aliases: ["song", "music", "ytmp3"],
     description: "Download a song from YouTube",
     async execute(conn, msg, args, ctx) {
-        // Clean up the query (remove the command word if typed twice)
+        // Clean up the query
         if (args[0] && ["play", "song", "music", "ytmp3"].includes(args[0].toLowerCase())) {
             args.shift();
         }
 
-        if (!args.length) return ctx.reply("❌ Provide a song name. Example: `.play Yatapita`");
+        if (!args.length) {
+            return conn.sendMessage(ctx.from, { text: "❌ Provide a song name. Example: `.play Yatapita`" }, { quoted: msg });
+        }
         
         const query = args.join(" ");
-        await ctx.reply(`🔍 Searching for *${query}*...`);
+        await conn.sendMessage(ctx.from, { text: `🔍 Searching for *${query}*...` }, { quoted: msg });
 
         try {
-            // 1. Search YouTube for the video
+            // 1. Search YouTube
             const searchResults = await yts(query);
             if (!searchResults.videos || searchResults.videos.length === 0) {
-                return ctx.reply("❌ No results found for that query.");
+                return conn.sendMessage(ctx.from, { text: "❌ No results found for that query." }, { quoted: msg });
             }
 
             const video = searchResults.videos[0];
             const videoUrl = video.url;
             const title = video.title;
 
-            await ctx.reply(`🎵 *Found:* ${title}\n⏳ Fetching audio, please wait...`);
+            await conn.sendMessage(ctx.from, { text: `🎵 *Found:* ${title}\n⏳ Fetching audio, please wait...` }, { quoted: msg });
 
             // 2. Ask Cobalt API for the MP3 link
             let downloadUrl = null;
@@ -39,10 +40,7 @@ module.exports = {
                     isAudioOnly: true,
                     aFormat: "mp3"
                 }, {
-                    headers: { 
-                        "Accept": "application/json", 
-                        "Content-Type": "application/json" 
-                    }
+                    headers: { "Accept": "application/json", "Content-Type": "application/json" }
                 });
                 
                 if (response.data && response.data.url) {
@@ -52,7 +50,7 @@ module.exports = {
                 console.error("Cobalt API Error:", apiError.message);
             }
 
-            // Fallback to a second API if Cobalt fails (rate limit, etc)
+            // Fallback to a second API if Cobalt fails
             if (!downloadUrl) {
                 try {
                     const fallbackRes = await axios.get(`https://api.zenkeymon.xyz/download/ytmp3?url=${encodeURIComponent(videoUrl)}`);
@@ -65,15 +63,15 @@ module.exports = {
             }
 
             if (!downloadUrl) {
-                return ctx.reply("❌ Failed to get download link. The API might be down. Try again later.");
+                return conn.sendMessage(ctx.from, { text: "❌ Failed to get download link. The API might be down. Try again later." }, { quoted: msg });
             }
 
-            // 3. Download the audio into a Buffer (Bypasses IP blocks)
-            await ctx.reply("📥 Downloading audio to server...");
+            // 3. Download the audio into a Buffer
+            await conn.sendMessage(ctx.from, { text: "📥 Downloading audio to server..." }, { quoted: msg });
             const audioRes = await axios.get(downloadUrl, { 
                 responseType: 'arraybuffer',
                 headers: { 'User-Agent': 'Mozilla/5.0' },
-                timeout: 60000 // 60 seconds timeout
+                timeout: 60000 
             });
             
             const audioBuffer = Buffer.from(audioRes.data);
@@ -88,7 +86,7 @@ module.exports = {
 
         } catch (error) {
             console.error("Play command error:", error.message);
-            await ctx.reply("❌ An error occurred while downloading the song.");
+            await conn.sendMessage(ctx.from, { text: "❌ An error occurred while downloading the song." }, { quoted: msg });
         }
     }
 };
