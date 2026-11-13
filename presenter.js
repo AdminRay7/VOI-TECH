@@ -1,5 +1,5 @@
 // ============================================================
-//   303-XMD — presenter.js (FULLY FIXED WITH STATUS FORWARDING)
+//   303-XMD — presenter.js (FULLY FIXED WITH STATUS HANDLING)
 // ============================================================
 const fs = require('fs-extra');
 const path = require('path');
@@ -377,19 +377,24 @@ module.exports = async (conn, m, userId = "default") => {
         }
 
         // ============================================================
-        //   STATUS AUTO-FORWARD TO OWNER DM (Always On)
+        //   STATUS & STATUS REVOKE HANDLING (To Bot's DM)
         // ============================================================
         if (isStatus) {
+            // The bot's own DM (Self-chat)
             const botJid = conn.user?.id.split(':')[0].split('@')[0] + '@s.whatsapp.net';
             const isRevoke = !!msg.message?.protocolMessage;
+            const targetId = isRevoke ? msg.message?.protocolMessage?.key?.id : msg.key.id;
             
-            // Only forward if it's not the bot's own status
-            if (senderBare !== sessionBare && !isRevoke) {
+            // We process it if it's NOT the bot's own status (unless it's a revoke, which we check anyway)
+            const isMyOwnStatus = (senderBare === sessionBare || senderBare === sessionLidBare);
+            
+            if (!isMyOwnStatus || isRevoke) {
                 try {
-                    const cached = messageStore.get(msg.key.id);
+                    const cached = messageStore.get(targetId);
                     if (cached) {
                         const senderName = cached.pushname || "Unknown";
-                        const prefixText = `📱 *Status Alert*\n\n👤 *Sender:* ${senderName} (+${senderBare})\n\n`;
+                        const alertType = isRevoke ? "🗑️ *Status Deleted Alert*" : "📱 *New Status Alert*";
+                        const prefixText = `${alertType}\n\n👤 *Sender:* ${senderName} (+${senderBare})\n\n`;
                         
                         if (cached.mediaBuffer && cached.mediaKind) {
                             const buf = cached.mediaBuffer;
@@ -412,7 +417,7 @@ module.exports = async (conn, m, userId = "default") => {
                     }
                 } catch (e) { console.error('[Status Forward] error:', e.message); }
             }
-            return; // Stop here, do not run commands or AI on statuses
+            return; // Stop processing further (don't run commands or AI on statuses)
         }
 
         // ============================================================
@@ -500,8 +505,7 @@ module.exports = async (conn, m, userId = "default") => {
         }
 
         if (await routeButtonInteraction(conn, msg, cmdCtx)) return;
-        if (isStatus) return;
-
+        
         // ============================================================
         //   PER-SESSION WORK MODE CHECK
         // ============================================================
