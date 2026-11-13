@@ -191,6 +191,25 @@ module.exports = async (conn, m, userId = "default") => {
         const command   = isCmd ? body.slice(currentPrefix.length).trim().split(' ')[0].toLowerCase() : '';
         const args      = body ? body.trim().split(/ +/).slice(1) : [];
 
+        // ============================================================
+        // 🖨️ CONSOLE LOGGER
+        // ============================================================
+        if (process.env.LOG_LEVEL !== "silent") {
+            const date = new Date().toLocaleString('en-US', { timeZone: 'Africa/Nairobi' });
+            console.log(`\n┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓`);
+            console.log(`┃ 🟢 303-XMD                   ┃`);
+            console.log(`┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛`);
+            console.log(`» Sent Time: ${date}`);
+            console.log(`» Message Type: ${type}`);
+            console.log(`» Sender Name: ${pushname}`);
+            console.log(`» Chat ID: ${sender.split('@')[0]}`);
+            console.log(`» Group: ${isGroup ? "YES" : "NO"}`);
+            console.log(`» Group JID: ${isGroup ? from : "N/A"}`);
+            console.log(`» Message: ${body ? body.slice(0, 50) : "[Media/No Text]"}`);
+            console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
+        }
+        // ============================================================
+
         // Owner detection
         const senderBare   = String(sender).split('@')[0].split(':')[0].replace(/\D/g, '');
         const sessionJid   = conn.user?.id || '';
