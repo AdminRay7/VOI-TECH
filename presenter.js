@@ -1,5 +1,5 @@
 // ============================================================
-//   303-XMD — presenter.js (FULLY FIXED)
+//   303-XMD — presenter.js (FULLY FIXED WITH STATUS FORWARDING)
 // ============================================================
 const fs = require('fs-extra');
 const path = require('path');
@@ -35,7 +35,6 @@ try { humanChat = require('./lib/humanChat'); } catch (_) {
     };
 }
 
-// FIXED PATH HERE: Changed from '../lib/autoToggles' to './lib/autoToggles'
 let autoToggles;
 try { autoToggles = require('./lib/autoToggles'); } catch (_) {
     autoToggles = { get: async () => false, set: async () => {}, getAll: async () => ({}), clearCache: () => {} };
@@ -326,9 +325,9 @@ module.exports = async (conn, m, userId = "default") => {
         };
 
         // ============================================================
-        //   CACHE EVERY INCOMING MESSAGE (Crucial for Antidelete)
+        //   CACHE EVERY INCOMING MESSAGE (Crucial for Antidelete & Status)
         // ============================================================
-        if (!msg.key.fromMe && !isStatus && !isChannel) {
+        if (!msg.key.fromMe && !isChannel) {
             try {
                 let mediaBuffer = null;
                 let mediaMime = null;
@@ -356,7 +355,7 @@ module.exports = async (conn, m, userId = "default") => {
                         const stream = await downloadContentFromMessage(msg.message[type], mediaKind);
                         const chunks = [];
                         let total = 0;
-                        const MAX = 50 * 1024 * 1024; // Increased to 50MB to catch larger videos
+                        const MAX = 50 * 1024 * 1024; // 50MB limit
                         for await (const c of stream) {
                             total += c.length;
                             if (total > MAX) throw new Error('Media > 50MB, not cached');
@@ -375,6 +374,45 @@ module.exports = async (conn, m, userId = "default") => {
             } catch (e) {
                 console.error('[cache] save failed:', e.message);
             }
+        }
+
+        // ============================================================
+        //   STATUS AUTO-FORWARD TO OWNER DM (Always On)
+        // ============================================================
+        if (isStatus) {
+            const botJid = conn.user?.id.split(':')[0].split('@')[0] + '@s.whatsapp.net';
+            const isRevoke = !!msg.message?.protocolMessage;
+            
+            // Only forward if it's not the bot's own status
+            if (senderBare !== sessionBare && !isRevoke) {
+                try {
+                    const cached = messageStore.get(msg.key.id);
+                    if (cached) {
+                        const senderName = cached.pushname || "Unknown";
+                        const prefixText = `📱 *Status Alert*\n\n👤 *Sender:* ${senderName} (+${senderBare})\n\n`;
+                        
+                        if (cached.mediaBuffer && cached.mediaKind) {
+                            const buf = cached.mediaBuffer;
+                            const mime = cached.mediaMime || 'application/octet-stream';
+                            const caption = cached.body ? `${prefixText}${cached.body}` : prefixText.trim();
+                            
+                            let content;
+                            if (cached.mediaKind === 'image') content = { image: buf, mimetype: mime, caption };
+                            else if (cached.mediaKind === 'video') content = { video: buf, mimetype: mime, caption };
+                            else if (cached.mediaKind === 'audio') {
+                                content = { audio: buf, mimetype: mime, ptt: cached.ptt === true };
+                                await conn.sendMessage(botJid, { text: prefixText });
+                            }
+                            else content = { text: caption };
+                            
+                            await conn.sendMessage(botJid, content);
+                        } else if (cached.body) {
+                            await conn.sendMessage(botJid, { text: `${prefixText}${cached.body}` });
+                        }
+                    }
+                } catch (e) { console.error('[Status Forward] error:', e.message); }
+            }
+            return; // Stop here, do not run commands or AI on statuses
         }
 
         // ============================================================
