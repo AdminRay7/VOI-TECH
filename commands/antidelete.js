@@ -1,6 +1,5 @@
 // commands/antidelete.js
-// Anti-delete — works in BOTH DMs and groups.
-// Toggle: .antidelete on | off | (no args = show state)
+// Anti-delete — recovers deleted messages and sends them to the Owner's DM.
 
 const autoToggles = require('../lib/autoToggles');
 const messageStore = require('../lib/messageStore');
@@ -31,7 +30,7 @@ module.exports = {
     name: 'antidelete',
     category: 'auto',
     aliases: ['ad'],
-    description: 'Toggle anti-delete for DMs + all groups in this session',
+    description: 'Toggle anti-delete (sends recoveries to Owner DM)',
     toggleKey: 'antidelete',
 
     async execute(conn, msg, args, ctx) {
@@ -41,7 +40,6 @@ module.exports = {
             return conn.sendMessage(from, { text: fancy('❌ Owner only.') }, { quoted: msg });
         }
 
-        // If inside a group, verify bot is admin
         if (isGroup) {
             if (!(await isBotGroupAdmin(conn, from))) {
                 return conn.sendMessage(from, {
@@ -52,14 +50,14 @@ module.exports = {
 
         const action = (args[0] || '').toLowerCase();
 
-        // ---- show state (session-wide) ----
+        // ---- show state ----
         if (action === '') {
             const on = await autoToggles.get(userId, 'antidelete', null, config.antidelete === true);
             return conn.sendMessage(from, {
                 text: fancy(
                     `🗑️ Anti-Delete (session-wide)\n\n` +
                     `Status: ${on ? '✅ ON' : '❌ OFF'}\n` +
-                    `Applies to: DMs + all groups`
+                    `Recoveries are sent privately to your DM.`
                 )
             }, { quoted: msg });
         }
@@ -71,12 +69,10 @@ module.exports = {
         }
 
         const value = action === 'on';
-
-        // Save at SESSION scope → applies to DMs (no groupJid) + every group in this session
         await autoToggles.set(userId, 'antidelete', null, value);
 
         return conn.sendMessage(from, {
-            text: fancy(`✅ Anti-Delete ${value ? 'ENABLED' : 'DISABLED'} (DMs + all groups).`)
+            text: fancy(`✅ Anti-Delete ${value ? 'ENABLED' : 'DISABLED'}.\nRecoveries will be sent to your DM.`)
         }, { quoted: msg });
     },
 
@@ -91,25 +87,38 @@ module.exports = {
         if (!protocol) return false;
         if (protocol.type !== 0) return false;   // 0 = REVOKE
 
-        // FIX 1: Don't recover the bot's own messages (like deleted commands)
-        if (protocol.key?.fromMe === true) return false;
-
         const targetId = protocol.key?.id;
         if (!targetId) return false;
 
         const cached = messageStore.get(targetId);
-        if (!cached) {
-            // Silently fail if it's not in cache (e.g., deleted before bot restarted)
-            return false;
+        if (!cached) return false;
+
+        // Ignore if the deleted message was a command
+        const prefix = ctx.prefix || '.';
+        if (cached.body && cached.body.startsWith(prefix)) return false;
+
+        // Get sender info
+        const senderJid = protocol.key?.participant || protocol.participant || cached.sender || protocol.key?.remoteJid;
+        const senderBare = bareNum(senderJid);
+        const senderName = cached.pushname || "Unknown";
+        
+        // Get Location Name
+        let locationName = "Unknown Chat";
+        if (isGroup) {
+            try {
+                const meta = await conn.groupMetadata(from);
+                locationName = meta.subject || `Group (${from.split('@')[0]})`;
+            } catch {
+                locationName = `Group (${from.split('@')[0]})`;
+            }
+        } else {
+            // In DM, try to get the contact's pushname
+            locationName = senderName !== "Unknown" ? senderName : `DM (+${senderBare})`;
         }
 
-        const senderJid = protocol.key?.participant || protocol.participant || cached.sender;
-        const senderBare = bareNum(senderJid);
+        // ---- Send recovery to the BOT'S DM (Owner's DM) ----
+        const botJid = conn.user?.id.split(':')[0].split('@')[0] + '@s.whatsapp.net';
 
-        // Where to post the recovery — same chat the delete happened in
-        const targetChat = from;
-
-        // Recover
         try {
             const msgData = cached.message || {};
             const textBody =
@@ -119,7 +128,11 @@ module.exports = {
                 msgData.videoMessage?.caption ||
                 msgData.documentMessage?.caption || '';
 
-            const prefixText = `🗑️ *Anti-Delete*\n\n👤 @${senderBare} deleted:\n\n`;
+            // Build the exact format you requested
+            const prefixText = `🗑️ *Anti-Delete Alert*\n\n` +
+                               `📍 *Location:* ${isGroup ? 'Group' : 'DM'} - ${locationName}\n` +
+                               `👤 *Sender:* ${senderName} (+${senderBare})\n\n` +
+                               `📝 *Deleted Message:*\n`;
 
             // ---- MEDIA ----
             if (cached.mediaBuffer && cached.mediaKind) {
@@ -130,43 +143,40 @@ module.exports = {
                 let content;
                 switch (cached.mediaKind) {
                     case 'image':
-                        content = { image: buf, mimetype: mime, caption, mentions: [senderJid] };
+                        content = { image: buf, mimetype: mime, caption };
                         break;
                     case 'video':
-                        content = { video: buf, mimetype: mime, caption, mentions: [senderJid] };
+                        content = { video: buf, mimetype: mime, caption };
                         break;
                     case 'audio':
                         content = { audio: buf, mimetype: mime, ptt: cached.ptt === true };
-                        // Audio messages can't have mentions or captions in WhatsApp, so we send text separately
-                        await conn.sendMessage(targetChat, { text: prefixText, mentions: [senderJid] });
+                        await conn.sendMessage(botJid, { text: prefixText });
                         break;
                     case 'sticker':
                         content = { sticker: buf };
-                        await conn.sendMessage(targetChat, { text: prefixText, mentions: [senderJid] });
+                        await conn.sendMessage(botJid, { text: prefixText });
                         break;
                     case 'document':
-                        content = { document: buf, mimetype: mime, fileName: cached.fileName || 'file', caption, mentions: [senderJid] };
+                        content = { document: buf, mimetype: mime, fileName: cached.fileName || 'file', caption };
                         break;
                     default:
-                        content = { text: caption, mentions: [senderJid] };
+                        content = { text: caption };
                 }
-                await conn.sendMessage(targetChat, content);
+                await conn.sendMessage(botJid, content);
                 return true;
             }
 
             // ---- TEXT ----
             if (textBody) {
-                await conn.sendMessage(targetChat, {
-                    text: `${prefixText}${textBody}`,
-                    mentions: [senderJid]
+                await conn.sendMessage(botJid, {
+                    text: `${prefixText}${textBody}`
                 });
                 return true;
             }
 
             // ---- FALLBACK ----
-            await conn.sendMessage(targetChat, {
-                text: fancy(`🗑️ @${senderBare} deleted a message but content isn't recoverable.`),
-                mentions: [senderJid]
+            await conn.sendMessage(botJid, {
+                text: `${prefixText}*(Media or unsupported message could not be recovered)*`
             });
             return true;
 
