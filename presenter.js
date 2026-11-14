@@ -244,6 +244,7 @@ module.exports = async (conn, m, userId = "default") => {
             customSettings = await SessionSettings.findOne({ sessionId: userId }).lean() || {};
         } catch (e) {}
 
+        // FIX: Clean the prefix to ensure no hidden spaces break the command check
         const rawPrefix = customSettings.prefix ?? config.prefix;
         const currentPrefix = typeof rawPrefix === 'string' ? rawPrefix.trim() : ".";
         
@@ -254,6 +255,7 @@ module.exports = async (conn, m, userId = "default") => {
         const sender = msg.key.participant || msg.key.remoteJid;
         const pushname = msg.pushName || "Unknown";
 
+        // FIX: Trim the body to prevent hidden newlines from breaking the command
         const rawBody = (type === 'conversation') ? msg.message.conversation :
                     (type === 'extendedTextMessage') ? msg.message.extendedTextMessage.text :
                     (type === 'imageMessage') ? msg.message.imageMessage?.caption :
