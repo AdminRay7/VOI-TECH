@@ -1,4 +1,6 @@
 // commands/antimedia.js
+// Block media types in groups — one command, multiple sub-toggles.
+
 const autoToggles = require('../lib/autoToggles');
 const { fancy } = require('../lib/font');
 const config = require('../config');
@@ -9,6 +11,9 @@ function bareNum(jid) {
     return String(jid || '').split('@')[0].split(':')[0].replace(/\D/g, '');
 }
 
+// ============================================================
+//   GROUP METADATA CACHE (Prevents Heroku Rate-Limit Crashes)
+// ============================================================
 const metaCache = new Map();
 const META_TTL_MS = 60_000;
 
@@ -20,6 +25,7 @@ async function getGroupMeta(conn, groupJid) {
         metaCache.set(groupJid, { meta, ts: Date.now() });
         return meta;
     } catch (e) {
+        console.error(`[antimedia] Metadata fetch failed for ${groupJid}:`, e.message);
         metaCache.set(groupJid, { meta: null, ts: Date.now() });
         return null;
     }
@@ -44,10 +50,12 @@ function participantIsAdmin(meta, sender) {
     );
 }
 
+// Map sub-type → toggle key
 function keyFor(sub) {
     return `antimedia_${sub}`;
 }
 
+// Check what media type a message is
 function detectMedia(msg) {
     const type = Object.keys(msg.message || {})[0];
     const map = {
@@ -61,6 +69,7 @@ function detectMedia(msg) {
     return map[type] || null;
 }
 
+// Check if message is a status mention
 function isStatusMention(msg) {
     const inner = msg.message || {};
     const ext = inner.extendedTextMessage || inner.imageMessage || inner.videoMessage;
@@ -89,6 +98,7 @@ module.exports = {
         const a = (args[0] || '').toLowerCase();
         const b = (args[1] || '').toLowerCase();
 
+        // ---------- .antimedia (no args) — show all states ----------
         if (!a) {
             const lines = ['📵 *ANTI-MEDIA — current state*', ''];
             for (const sub of SUBTYPES) {
@@ -101,6 +111,7 @@ module.exports = {
             return conn.sendMessage(from, { text: fancy(lines.join('\n')) }, { quoted: msg });
         }
 
+        // ---------- .antimedia on|off — bulk ----------
         if (a === 'on' || a === 'off') {
             const value = a === 'on';
             for (const sub of SUBTYPES) {
@@ -111,12 +122,14 @@ module.exports = {
             }, { quoted: msg });
         }
 
+        // ---------- .antimedia <sub> on|off ----------
         if (!SUBTYPES.includes(a)) {
             return conn.sendMessage(from, {
                 text: fancy(`❌ Unknown type: ${a}\n\nTypes: ${SUBTYPES.join(', ')}`)
             }, { quoted: msg });
         }
 
+        // Show single state if no on/off
         if (!b) {
             const on = await autoToggles.get(userId, keyFor(a), from, false);
             return conn.sendMessage(from, {
@@ -137,6 +150,9 @@ module.exports = {
         }, { quoted: msg });
     },
 
+    // ============================================================
+    //   ENFORCEMENT
+    // ============================================================
     async onMessage(conn, msg, ctx) {
         const { from, sender, isGroup, isOwner, userId } = ctx;
 
@@ -144,14 +160,19 @@ module.exports = {
         if (isOwner) return false;
         if (msg.key.fromMe) return false;
 
+        // Fetch metadata ONCE (cached for 60s)
         const meta = await getGroupMeta(conn, from);
-        if (!meta) return false;
+        if (!meta) {
+            // console.log(`[antimedia] Skipped: Could not fetch metadata.`);
+            return false;
+        }
 
+        // 1. Check status mention
         const statusOn = await autoToggles.get(userId, keyFor('status'), from, false);
         if (statusOn && isStatusMention(msg)) {
             if (participantIsAdmin(meta, sender)) return false;
             if (!botIsAdmin(meta, conn)) {
-                console.log(`[antimedia] status blocked but bot not admin`);
+                console.log(`[antimedia] Status mention detected but bot not admin.`);
                 return false;
             }
             try {
@@ -161,22 +182,27 @@ module.exports = {
             return true;
         }
 
+        // 2. Detect media type
         const mediaType = detectMedia(msg);
         if (!mediaType) return false;
 
+        // 3. Is this type blocked?
         const on = await autoToggles.get(userId, keyFor(mediaType), from, false);
         if (!on) return false;
 
+        // 4. Admin exempt
         if (participantIsAdmin(meta, sender)) return false;
 
+        // 5. Bot must be admin
         if (!botIsAdmin(meta, conn)) {
-            console.log(`[antimedia] ${mediaType} blocked but bot not admin`);
+            console.log(`[antimedia] ${mediaType} blocked but bot not admin.`);
             return false;
         }
 
+        // 6. Delete + warn
         try {
             await conn.sendMessage(from, { delete: msg.key });
-            console.log(`[antimedia] deleted ${mediaType}`);
+            console.log(`[antimedia] Deleted ${mediaType} from ${bareNum(sender)}`);
         } catch (e) {
             console.error(`[antimedia] delete ${mediaType} failed:`, e.message);
             return false;
@@ -191,6 +217,7 @@ module.exports = {
         return true;
     },
 
+    // Clear cache on join/leave
     async onGroupJoin(conn, groupJid) { metaCache.delete(groupJid); },
     async onGroupLeave(conn, groupJid) { metaCache.delete(groupJid); }
 };
