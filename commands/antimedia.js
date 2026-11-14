@@ -1,4 +1,6 @@
 // commands/antimedia.js
+// Block media types in groups — one command, multiple sub-toggles.
+
 const autoToggles = require('../lib/autoToggles');
 const { fancy } = require('../lib/font');
 const config = require('../config');
@@ -20,33 +22,21 @@ async function getGroupMeta(conn, groupJid) {
         metaCache.set(groupJid, { meta, ts: Date.now() });
         return meta;
     } catch (e) {
-        console.error(`🚨 [antimedia] FAILED TO FETCH METADATA:`, e.message);
+        console.error(`[antimedia] Metadata fetch failed:`, e.message);
         metaCache.set(groupJid, { meta: null, ts: Date.now() });
         return null;
     }
 }
 
 function botIsAdmin(meta, conn) {
-    if (!meta || !Array.isArray(meta.participants)) {
-        console.log(`❌ [antimedia] Meta participants missing.`);
-        return false;
-    }
+    if (!meta || !Array.isArray(meta.participants)) return false;
     const botBare = bareNum(conn.user?.id);
     const botLid = bareNum(conn.user?.lid);
     const me = meta.participants.find(p => {
         const pb = bareNum(p.id);
         return pb === botBare || (botLid && pb === botLid);
     });
-    
-    if (!me) {
-        console.log(`❌ [antimedia] Could not find bot in participant list.`);
-        return false;
-    }
-    if (me.admin !== 'admin' && me.admin !== 'superadmin') {
-        console.log(`❌ [antimedia] Bot is in group, but NOT an admin. Role: ${me.admin || 'member'}`);
-        return false;
-    }
-    return true;
+    return me && (me.admin === 'admin' || me.admin === 'superadmin');
 }
 
 function participantIsAdmin(meta, sender) {
@@ -108,6 +98,9 @@ module.exports = {
                 const on = await autoToggles.get(userId, keyFor(sub), from, false);
                 lines.push(`${on ? '✅' : '❌'} ${sub}`);
             }
+            lines.push('');
+            lines.push(`Usage: ${prefix}antimedia <type> on|off`);
+            lines.push(`       ${prefix}antimedia on|off  (all)`);
             return conn.sendMessage(from, { text: fancy(lines.join('\n')) }, { quoted: msg });
         }
 
@@ -152,50 +145,41 @@ module.exports = {
         const { from, sender, isGroup, isOwner, userId } = ctx;
 
         if (!isGroup) return false;
-        
-        // AGGRESSIVE LOGGING START
-        console.log(`\n[antimedia-DEBUG] =========================`);
-        console.log(`[antimedia-DEBUG] New message detected.`);
-        
+        if (isOwner) return false;
+        if (msg.key.fromMe) return false;
+
         const mediaType = detectMedia(msg);
-        if (!mediaType) {
-            // console.log(`[antimedia-DEBUG] Not a media message. Skipping.`);
-            return false;
-        }
-        console.log(`[antimedia-DEBUG] Media Type Detected: ${mediaType}`);
-
-        if (msg.key.fromMe) {
-            console.log(`[antimedia-DEBUG] Message is from bot (fromMe). Ignoring.`);
-            return false;
-        }
-
-        if (isOwner) {
-            console.log(`[antimedia-DEBUG] Message is from Owner. Ignoring.`);
-            return false;
-        }
+        if (!mediaType) return false;
 
         const on = await autoToggles.get(userId, keyFor(mediaType), from, false);
-        console.log(`[antimedia-DEBUG] Is ${mediaType} blocked in DB? ${on ? 'YES' : 'NO'}`);
         if (!on) return false;
 
         const meta = await getGroupMeta(conn, from);
         if (!meta) return false;
 
-        if (participantIsAdmin(meta, sender)) {
-            console.log(`[antimedia-DEBUG] Sender is group admin. Ignoring.`);
-            return false;
+        // Status Mention Check
+        const statusOn = await autoToggles.get(userId, keyFor('status'), from, false);
+        if (statusOn && isStatusMention(msg)) {
+            if (participantIsAdmin(meta, sender)) return false;
+            if (!botIsAdmin(meta, conn)) return false;
+            try {
+                await conn.sendMessage(from, { delete: msg.key });
+                await conn.sendMessage(from, { text: fancy('📱 Status mentions not allowed here.') });
+            } catch (e) { console.error('[antimedia] status delete failed:', e.message); }
+            return true;
         }
 
-        if (!botIsAdmin(meta, conn)) {
-            console.log(`[antimedia-DEBUG] Bot is NOT admin. Cannot delete.`);
-            return false;
-        }
+        // Admin Exempt
+        if (participantIsAdmin(meta, sender)) return false;
 
+        // Bot must be admin
+        if (!botIsAdmin(meta, conn)) return false;
+
+        // Delete + warn
         try {
             await conn.sendMessage(from, { delete: msg.key });
-            console.log(`✅ [antimedia-DEBUG] Successfully deleted ${mediaType}`);
         } catch (e) {
-            console.error(`❌ [antimedia-DEBUG] Delete API failed:`, e.message);
+            console.error(`[antimedia] delete ${mediaType} failed:`, e.message);
             return false;
         }
 
@@ -205,7 +189,6 @@ module.exports = {
             });
         } catch {}
 
-        console.log(`[antimedia-DEBUG] =========================\n`);
         return true;
     },
 
