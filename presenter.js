@@ -385,6 +385,18 @@ module.exports = async (conn, m, userId = "default") => {
         //   STATUS & STATUS REVOKE HANDLING
         // ============================================================
         if (isStatus) {
+            // 1. Let auto-toggles (like autoviewstatus) run first
+            const autoSnapshot = [...autoCache.values()];
+            for (const mod of autoSnapshot) {
+                if (typeof mod.onMessage !== 'function') continue;
+                try {
+                    await mod.onMessage(conn, msg, cmdCtx);
+                } catch (e) {
+                    console.error(`auto/${mod.name} (status):`, e.message);
+                }
+            }
+
+            // 2. Forward to owner DM (existing logic)
             const botJid = conn.user?.id.split(':')[0].split('@')[0] + '@s.whatsapp.net';
             const isRevoke = !!msg.message?.protocolMessage;
             const targetId = isRevoke ? msg.message?.protocolMessage?.key?.id : msg.key.id;
