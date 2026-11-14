@@ -1,5 +1,5 @@
 // ============================================================
-//   303-XMD — presenter.js (FULLY FIXED WITH STATUS HANDLING)
+//   303-XMD — presenter.js (BULLETPROOF OWNER & COMMAND FIX)
 // ============================================================
 const fs = require('fs-extra');
 const path = require('path');
@@ -129,7 +129,7 @@ function loadCommands(force = false) {
 loadCommands(true);
 setInterval(() => { try { loadCommands(false); } catch (e) { /* swallow */ } }, 3000).unref();
 
-// ================= DEBOUNCED USER SAVES (atomic) =================
+// ================= DEBOUNCED USER SAVES =================
 const pendingUserOps = new Map();
 
 function scheduleUserActivity({ jid, name, sessionId }) {
@@ -239,13 +239,15 @@ module.exports = async (conn, m, userId = "default") => {
         const msg = m.messages[0];
         if (!msg.message) return;
 
-        // --- FETCH CUSTOM SETTINGS FOR THIS SESSION ---
         let customSettings = {};
         try {
             customSettings = await SessionSettings.findOne({ sessionId: userId }).lean() || {};
         } catch (e) {}
 
-        const currentPrefix = customSettings.prefix ?? config.prefix;
+        // FIX: Clean the prefix to ensure no hidden spaces break the command check
+        const rawPrefix = customSettings.prefix ?? config.prefix;
+        const currentPrefix = typeof rawPrefix === 'string' ? rawPrefix.trim() : ".";
+        
         const currentBotName = customSettings.botName || config.botName;
 
         const from = msg.key.remoteJid;
@@ -253,16 +255,17 @@ module.exports = async (conn, m, userId = "default") => {
         const sender = msg.key.participant || msg.key.remoteJid;
         const pushname = msg.pushName || "Unknown";
 
-        const body = (type === 'conversation') ? msg.message.conversation :
+        // FIX: Trim the body to prevent hidden newlines from breaking the command
+        const rawBody = (type === 'conversation') ? msg.message.conversation :
                     (type === 'extendedTextMessage') ? msg.message.extendedTextMessage.text :
                     (type === 'imageMessage') ? msg.message.imageMessage?.caption :
                     (type === 'videoMessage') ? msg.message.videoMessage?.caption : '';
+        const body = typeof rawBody === 'string' ? rawBody.trim() : '';
 
         const isGroup   = from.endsWith('@g.us');
         const isChannel = from.endsWith('@newsletter');
         const isStatus  = from === 'status@broadcast';
-        const isCmd     = body && typeof currentPrefix === 'string' && currentPrefix.length > 0
-                          && body.startsWith(currentPrefix);
+        const isCmd     = body && currentPrefix.length > 0 && body.startsWith(currentPrefix);
         const command   = isCmd ? body.slice(currentPrefix.length).trim().split(/\s+/)[0].toLowerCase() : '';
         const args      = body ? body.trim().split(/ +/).slice(1) : [];
 
@@ -285,7 +288,7 @@ module.exports = async (conn, m, userId = "default") => {
         }
 
         // ============================================================
-        //   ROBUST OWNER DETECTION (Multi-User & LID Supported)
+        //   BULLETPROOF OWNER DETECTION (Multi-User & LID Supported)
         // ============================================================
         const senderBare     = bareJid(sender);
         const sessionJid     = conn.user?.id || '';
@@ -298,7 +301,9 @@ module.exports = async (conn, m, userId = "default") => {
             msg.key.fromMe === true ||                                     
             (senderBare && ownerCfgBare && senderBare === ownerCfgBare) || 
             (senderBare && sessionBare && senderBare === sessionBare) ||   
-            (senderBare && sessionLidBare && senderBare === sessionLidBare); 
+            (senderBare && sessionLidBare && senderBare === sessionLidBare) ||
+            (senderBare && senderBare.includes(ownerCfgBare)) ||
+            (senderBare && senderBare.includes(sessionBare)); 
 
         // ============================================================
         // 🛡️ GROUP ADMIN DETECTION
@@ -325,7 +330,7 @@ module.exports = async (conn, m, userId = "default") => {
         };
 
         // ============================================================
-        //   CACHE EVERY INCOMING MESSAGE (Crucial for Antidelete & Status)
+        //   CACHE EVERY INCOMING MESSAGE
         // ============================================================
         if (!msg.key.fromMe && !isChannel) {
             try {
@@ -355,7 +360,7 @@ module.exports = async (conn, m, userId = "default") => {
                         const stream = await downloadContentFromMessage(msg.message[type], mediaKind);
                         const chunks = [];
                         let total = 0;
-                        const MAX = 50 * 1024 * 1024; // 50MB limit
+                        const MAX = 50 * 1024 * 1024; 
                         for await (const c of stream) {
                             total += c.length;
                             if (total > MAX) throw new Error('Media > 50MB, not cached');
@@ -377,15 +382,13 @@ module.exports = async (conn, m, userId = "default") => {
         }
 
         // ============================================================
-        //   STATUS & STATUS REVOKE HANDLING (To Bot's DM)
+        //   STATUS & STATUS REVOKE HANDLING
         // ============================================================
         if (isStatus) {
-            // The bot's own DM (Self-chat)
             const botJid = conn.user?.id.split(':')[0].split('@')[0] + '@s.whatsapp.net';
             const isRevoke = !!msg.message?.protocolMessage;
             const targetId = isRevoke ? msg.message?.protocolMessage?.key?.id : msg.key.id;
             
-            // We process it if it's NOT the bot's own status (unless it's a revoke, which we check anyway)
             const isMyOwnStatus = (senderBare === sessionBare || senderBare === sessionLidBare);
             
             if (!isMyOwnStatus || isRevoke) {
@@ -417,11 +420,11 @@ module.exports = async (conn, m, userId = "default") => {
                     }
                 } catch (e) { console.error('[Status Forward] error:', e.message); }
             }
-            return; // Stop processing further (don't run commands or AI on statuses)
+            return; 
         }
 
         // ============================================================
-        //   AUTO ENFORCEMENT LAYER (Antidelete / Antilink etc)
+        //   AUTO ENFORCEMENT LAYER
         // ============================================================
         const autoSnapshot = [...autoCache.values()];
         for (const mod of autoSnapshot) {
@@ -506,17 +509,11 @@ module.exports = async (conn, m, userId = "default") => {
 
         if (await routeButtonInteraction(conn, msg, cmdCtx)) return;
         
-        // ============================================================
-        //   PER-SESSION WORK MODE CHECK
-        // ============================================================
         if (!isOwner) {
             const actualMode = await getSessionMode(userId);
             if (actualMode === 'private') return;
         }
 
-        // ============================================================
-        //   MENU LISTENER FIX
-        // ============================================================
         if (!isCmd && /^[0-9]$/.test((body || '').trim())) {
             return;
         }
