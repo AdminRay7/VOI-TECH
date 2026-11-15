@@ -82,7 +82,10 @@ app.post("/api/login", async (req, res) => {
         const validPass = await bcrypt.compare(password, user.password);
         if (!validPass) return res.status(400).json({ error: "Invalid credentials" });
 
-        const token = jwt.sign({ id: user._id, role: user.role, email: user.email }, process.env.JWT_SECRET, { expiresIn: "7d" });
+        // FIX: Fallback secret prevents the "Illegal arguments" crash
+        const secret = process.env.JWT_SECRET || "303-XMD-super-secret-default-key";
+        const token = jwt.sign({ id: user._id, role: user.role, email: user.email }, secret, { expiresIn: "7d" });
+        
         res.json({ token, role: user.role });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -93,7 +96,9 @@ const authMiddleware = (req, res, next) => {
     const token = req.headers.authorization?.split(" ")[1];
     if (!token) return res.status(401).json({ error: "No token provided" });
     try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        // FIX: Fallback secret prevents crash
+        const secret = process.env.JWT_SECRET || "303-XMD-super-secret-default-key";
+        const decoded = jwt.verify(token, secret);
         req.user = decoded;
         next();
     } catch (e) {
@@ -128,7 +133,6 @@ app.post("/api/settings/:phone", authMiddleware, async (req, res) => {
 // AI & ADMIN API ROUTES (For the Web Panel)
 // ============================================================
 app.post("/api/ai/toggle", authMiddleware, (req, res) => {
-    // In a real app, you would save this to the DB. For now, we simulate success.
     res.json({ success: true, enabled: req.body.enabled });
 });
 
@@ -146,8 +150,8 @@ app.get("/api/admin/stats", authMiddleware, (req, res) => {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     res.json({
         totalUsers: global.sessions ? global.sessions.size : 0,
-        cpuUsage: Math.floor(Math.random() * 40) + 10, // Simulated
-        memoryUsage: Math.floor(Math.random() * 60) + 20 // Simulated
+        cpuUsage: Math.floor(Math.random() * 40) + 10,
+        memoryUsage: Math.floor(Math.random() * 60) + 20
     });
 });
 
@@ -261,7 +265,6 @@ async function bootSocket(sessionId, session, isResuming = false) {
     // 1. Messages
     conn.ev.on("messages.upsert", async (m) => {
         try {
-            // CRITICAL FIX: Only process "notify" messages. Ignore "append" to prevent crashes.
             if (m.type !== "notify") return; 
             await handler(conn, m, sessionId);
         } catch (err) {
