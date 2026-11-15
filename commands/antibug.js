@@ -2,7 +2,7 @@
 // Anti-bug — detects and removes malicious unicode (zalgo), zero-width
 // characters, and oversized messages that crash or freeze WhatsApp clients.
 // Toggle: .antibug on | off | (no args = show state)
-// Scope: session-wide (all groups + DMs).
+// Scope: session-wide (all groups + DMs). OWNER ONLY.
 
 const path = require('path');
 const autoToggles = require(path.join(__dirname, '..', 'lib', 'autoToggles'));
@@ -13,29 +13,42 @@ function bareNum(jid) {
     return String(jid || '').split('@')[0].split(':')[0].replace(/\D/g, '');
 }
 
-async function isBotGroupAdmin(conn, groupJid) {
+// ============================================================
+//   GROUP METADATA CACHE (Prevents Heroku Rate-Limit Crashes)
+// ============================================================
+const metaCache = new Map();
+const META_TTL_MS = 60_000;
+
+async function getGroupMeta(conn, groupJid) {
+    const hit = metaCache.get(groupJid);
+    if (hit && Date.now() - hit.ts < META_TTL_MS) return hit.meta;
     try {
         const meta = await conn.groupMetadata(groupJid);
-        const botBare = bareNum(conn.user?.id);
-        const botLidBare = bareNum(conn.user?.lid);
-        const me = meta.participants.find(p => {
-            const pidBare = bareNum(p.id);
-            return pidBare === botBare || (botLidBare && pidBare === botLidBare);
-        });
-        if (!me) return false;
-        return me.admin === 'admin' || me.admin === 'superadmin';
-    } catch { return false; }
+        metaCache.set(groupJid, { meta, ts: Date.now() });
+        return meta;
+    } catch (e) {
+        metaCache.set(groupJid, { meta: null, ts: Date.now() });
+        return null;
+    }
 }
 
-async function isGroupAdmin(conn, groupJid, senderJid) {
-    try {
-        const meta = await conn.groupMetadata(groupJid);
-        const senderBare = bareNum(senderJid);
-        return meta.participants.some(p =>
-            bareNum(p.id) === senderBare &&
-            (p.admin === 'admin' || p.admin === 'superadmin')
-        );
-    } catch { return false; }
+function botIsAdmin(meta, conn) {
+    if (!meta || !Array.isArray(meta.participants)) return false;
+    const botBare = bareNum(conn.user?.id);
+    const botLid = bareNum(conn.user?.lid);
+    const me = meta.participants.find(p => {
+        const pb = bareNum(p.id);
+        return pb === botBare || (botLid && pb === botLid);
+    });
+    return me && (me.admin === 'admin' || me.admin === 'superadmin');
+}
+
+function participantIsAdmin(meta, sender) {
+    if (!meta || !Array.isArray(meta.participants)) return false;
+    const sb = bareNum(sender);
+    return meta.participants.some(p =>
+        bareNum(p.id) === sb && (p.admin === 'admin' || p.admin === 'superadmin')
+    );
 }
 
 // ============================================================
@@ -91,18 +104,21 @@ module.exports = {
     aliases: ['ab'],
     description: 'Toggle anti-bug (blocks malicious unicode / zalgo / oversize)',
     toggleKey: 'antibug',
-    enabled: () => true,
 
     async execute(conn, msg, args, ctx) {
-        const { from, isGroup, userId } = ctx;
+        const { from, isGroup, isOwner, userId } = ctx;
 
-        // We removed the strict isOwner check here. It will now enable smoothly.
+        // 🔒 OWNER ONLY LOCK
+        if (!isOwner) {
+            return conn.sendMessage(from, { text: fancy('❌ Owner only.') }, { quoted: msg });
+        }
+
         if (isGroup) {
-            const botAdmin = await isBotGroupAdmin(conn, from);
-            if (!botAdmin) {
+            const meta = await getGroupMeta(conn, from);
+            if (!botIsAdmin(meta, conn)) {
                 await conn.sendMessage(from, {
                     text: fancy('⚠️ Note: I am not an admin here. I can turn on Anti-Bug, but I cannot delete messages until you promote me.')
-                });
+                }, { quoted: msg });
             }
         }
 
@@ -120,7 +136,7 @@ module.exports = {
         }
 
         if (!['on', 'off'].includes(action)) {
-            return conn.sendMessage(from, { text: fancy(`Usage: ${config.prefix}antibug on|off`) });
+            return conn.sendMessage(from, { text: fancy(`Usage: ${config.prefix}antibug on|off`) }, { quoted: msg });
         }
 
         const value = action === 'on';
@@ -135,29 +151,36 @@ module.exports = {
     //   ENFORCEMENT
     // ============================================================
     async onMessage(conn, msg, ctx) {
-        const { from, sender, isGroup, isOwner, body } = ctx;
+        const { from, sender, isGroup, isOwner, body, userId } = ctx;
 
         if (isOwner) return false;
         if (msg.key.fromMe) return false;
         if (!body || !body.trim()) return false;
 
-        // group admins exempt in groups
-        if (isGroup) {
-            if (await isGroupAdmin(conn, from, sender)) return false;
-        }
+        // 1. Check toggle
+        const on = await autoToggles.get(userId, 'antibug', null, config.antibug === true);
+        if (!on) return false;
 
+        // 2. Detect bug
         const bug = detectBug(body);
         if (!bug) return false;
 
-        // In groups, need admin to delete
+        // 3. Group specific checks
         if (isGroup) {
-            if (!(await isBotGroupAdmin(conn, from))) {
-                console.log(`[antibug] bug detected but bot not admin in ${from}`);
+            const meta = await getGroupMeta(conn, from);
+            if (!meta) return false;
+            
+            // Exempt admins
+            if (participantIsAdmin(meta, sender)) return false;
+            
+            // Bot must be admin to delete
+            if (!botIsAdmin(meta, conn)) {
+                console.log(`[antibug] Bug detected but bot not admin in ${from}`);
                 return false;
             }
         }
 
-        // delete
+        // 4. Delete the bug message
         try {
             await conn.sendMessage(from, { delete: msg.key });
         } catch (e) {
@@ -165,7 +188,7 @@ module.exports = {
             return false;
         }
 
-        // warn — simple, clean, no details
+        // 5. Warn the chat
         try {
             await conn.sendMessage(from, {
                 text: fancy('🐛 *BUG DETECTED*')
