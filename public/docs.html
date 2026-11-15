@@ -3,22 +3,91 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>303-XMD — Documentation</title>
+  <title>303-XMD — Dashboard</title>
   <link rel="stylesheet" href="/sidebar.css">
   <style>
-    body { background: #0a0a0f; color: white; font-family: 'Inter', sans-serif; padding: 20px; }
-    .content-box { max-width: 800px; margin: 40px auto; background: rgba(20, 20, 30, 0.6); border: 1px solid rgba(255,255,255,0.08); padding: 30px; border-radius: 12px; }
-    h1 { font-size: 24px; margin-bottom: 10px; }
-    p { color: #8b8ba8; font-size: 14px; margin-bottom: 20px; }
+    body { padding-top: 90px !important; }
+    .main-content { max-width: 1100px; margin: 0 auto; padding: 20px; }
+    .header h1 { font-size: 32px; margin-bottom: 5px; }
+    .header p { color: var(--text-muted); margin-bottom: 30px; }
+
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px; }
+    .stat-card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 16px; padding: 25px; backdrop-filter: blur(10px); }
+    .stat-title { font-size: 13px; color: var(--text-muted); margin-bottom: 10px; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;}
+    .stat-value { font-size: 36px; font-weight: 700; }
+    .stat-value.online { color: var(--success); }
+    .stat-value.offline { color: var(--error); }
+
+    .action-panel { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 16px; padding: 40px; text-align: center; backdrop-filter: blur(10px); }
+    .action-panel h3 { font-size: 22px; margin-bottom: 10px; }
+    .action-panel p { color: var(--text-muted); margin-bottom: 25px; max-width: 500px; margin-inline: auto; }
   </style>
 </head>
 <body>
+  <div class="main-content">
+    <div class="header" id="header-area"></div>
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-title">Database</div>
+        <div class="stat-value online" id="db-status">Checking...</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-title">Active Sessions</div>
+        <div class="stat-value" id="session-count">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-title">Server Uptime</div>
+        <div class="stat-value" id="uptime">0s</div>
+      </div>
+    </div>
 
-  <div class="content-box">
-    <h1>📖 Documentation</h1>
-    <p>Read the guides on how to use and deploy the bot.</p>
+    <div class="action-panel" id="action-area" style="display:none;">
+      <h3>Connect a Device</h3>
+      <p>Link your WhatsApp account to the bot by generating a pairing code.</p>
+      <a href="/pair" class="btn">Go to Pairing Panel →</a>
+    </div>
+    
+    <div class="action-panel" id="welcome-area" style="display:none;">
+      <h3>Welcome to 303-XMD</h3>
+      <p>Please login or register to access your dashboard and manage your bots.</p>
+      <a href="/login" class="btn" style="margin-right:10px; background: rgba(255,255,255,0.1);">Login</a>
+      <a href="/register" class="btn">Register</a>
+    </div>
   </div>
 
   <script src="/sidebar.js"></script>
+  <script>
+    const token = localStorage.getItem("token");
+    
+    // Auto-redirect to login if not logged in
+    if (!token) {
+        window.location.href = "/login";
+    } else {
+        document.getElementById("action-area").style.display = "block";
+        document.getElementById("header-area").innerHTML = `<h1>Dashboard Overview</h1><p>Welcome back. Here is your system status.</p>`;
+        
+        let seconds = 0;
+        setInterval(() => {
+            seconds++;
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = seconds % 60;
+            document.getElementById("uptime").textContent = `${h}h ${m}m ${s}s`;
+        }, 1000);
+
+        async function updateStats() {
+            try {
+                const res = await fetch("/health");
+                const data = await res.json();
+                const dbEl = document.getElementById("db-status");
+                dbEl.textContent = data.dbConnected ? "Online" : "Offline";
+                dbEl.className = `stat-value ${data.dbConnected ? "online" : "offline"}`;
+                document.getElementById("session-count").textContent = data.activeSessions;
+            } catch (e) {}
+        }
+        updateStats();
+        setInterval(updateStats, 5000);
+    }
+  </script>
 </body>
 </html>
