@@ -45,9 +45,10 @@ const {
 } = require("@whiskeysockets/baileys");
 
 const config = require("./config");
-const handler = require("./presenter"); // Your Enterprise Handler
+const handler = require("./presenter"); 
 const User = require("./models/User");
 const Settings = require("./models/Settings");
+const SessionModel = require("./models/Session"); // NEW: Session Model
 
 const app = express();
 app.use(express.json());
@@ -96,7 +97,6 @@ const authMiddleware = (req, res, next) => {
     const token = req.headers.authorization?.split(" ")[1];
     if (!token) return res.status(401).json({ error: "No token provided" });
     try {
-        // FIX: Fallback secret prevents crash
         const secret = process.env.JWT_SECRET || "303-XMD-super-secret-default-key";
         const decoded = jwt.verify(token, secret);
         req.user = decoded;
@@ -130,7 +130,7 @@ app.post("/api/settings/:phone", authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-// AI & ADMIN API ROUTES (For the Web Panel)
+// AI & ADMIN API ROUTES
 // ============================================================
 app.post("/api/ai/toggle", authMiddleware, (req, res) => {
     res.json({ success: true, enabled: req.body.enabled });
@@ -258,10 +258,6 @@ async function bootSocket(sessionId, session, isResuming = false) {
     session.conn = conn;
     conn.ev.on("creds.update", saveCreds);
 
-    // ============================================================
-    // ROUTE EVENTS TO PRESENTER.JS
-    // ============================================================
-    
     // 1. Messages
     conn.ev.on("messages.upsert", async (m) => {
         try {
@@ -272,14 +268,14 @@ async function bootSocket(sessionId, session, isResuming = false) {
         }
     });
 
-    // 2. Group Updates (Welcome/Goodbye, Antilink)
+    // 2. Group Updates
     conn.ev.on('group-participants.update', async (update) => {
         try {
             await handler.handleGroupUpdate(conn, update, sessionId);
         } catch (e) { console.error("group-participants handler error:", e.message); }
     });
 
-    // 3. Calls (Anti-Call)
+    // 3. Calls
     conn.ev.on('call', async (calls) => {
         try {
             await handler.handleCallEvent(conn, calls, sessionId);
@@ -295,6 +291,7 @@ async function bootSocket(sessionId, session, isResuming = false) {
             session.socketReady = true;
             session.pairing = null;
             console.log(`✅ [${sessionId}] connected successfully!`);
+            
             try { 
                 await collection.updateOne({ _id: `${sessionId}:meta` }, { $set: { value: { jid: conn.user?.id, linkedAt: Date.now() } } }, { upsert: true }); 
             } catch {}
@@ -302,8 +299,13 @@ async function bootSocket(sessionId, session, isResuming = false) {
             try {
                 const cleanNumber = conn.user?.id.split(':')[0].split('@')[0];
                 const jid = `${cleanNumber}@s.whatsapp.net`;
-                if (isNewSession && !isResuming) await conn.sendMessage(jid, { text: `👋 Welcome! Session linked successfully.` });
-                else if (isResuming) await conn.sendMessage(jid, { text: `♻️ System Restarted - Bot is online.` });
+                
+                // Get the random session ID we generated
+                const friendlyId = session.friendlyId || sessionId;
+                const welcomeText = `👋 *303-XMD*\n\nIs online and ready!\n\nSession: *${friendlyId}*`;
+
+                if (isNewSession && !isResuming) await conn.sendMessage(jid, { text: welcomeText });
+                else if (isResuming) await conn.sendMessage(jid, { text: `♻️ System Restarted - Bot is online.\nSession: *${friendlyId}*` });
             } catch (e) {}
         }
 
@@ -359,6 +361,20 @@ async function requestPairingCode(sessionId, phoneNumber) {
     const formatted = code.match(/.{1,4}/g)?.join("-") || code;
     session.pairing = formatted;
     session.pairingNumber = phoneNumber;
+
+    // 🔥 GENERATE RANDOM SESSION ID
+    const randomSessionId = Math.random().toString(36).substring(2, 10) + Math.floor(Math.random() * 999);
+    session.friendlyId = randomSessionId; 
+    
+    // Save to MongoDB
+    try {
+        await SessionModel.findOneAndUpdate(
+            { phoneNumber }, 
+            { $set: { sessionId: randomSessionId } }, 
+            { upsert: true }
+        );
+    } catch (e) { console.error("Failed to save session ID:", e.message); }
+
     return formatted;
 }
 
@@ -384,7 +400,6 @@ app.get("/health", (req, res) => {
 // ============================================================
 app.listen(config.port, () => {
     console.log(`🌐 Web panel running on port ${config.port}`);
-    // Keep-awake ping
     setInterval(() => { 
         const http = require('http'); 
         http.get(`http://localhost:${config.port}/health`, () => {}).on('error', () => {}); 
@@ -411,7 +426,6 @@ async function resumeAllSessions() {
                 } catch (e) {
                     console.error(`Failed to resume ${sessionId}:`, e.message);
                 }
-                // Small delay between boots to prevent rate-limiting from WhatsApp
                 await new Promise(r => setTimeout(r, 2000));
             }
         } else {
