@@ -1,27 +1,45 @@
-const config = require("../config");
+// commands/goodbye.js
+const autoToggles = require('../lib/autoToggles');
+const { fancy } = require('../lib/font');
+const config = require('../config');
 
 module.exports = {
-    name: "goodbye",
-    category: "group",
-    description: "Toggle goodbye messages on/off",
-    async execute(conn, msg, args, ctx) {
-        if (!ctx.isGroup) return ctx.reply("❌ This command is only for groups.");
-        if (!ctx.isOwner && !ctx.isAdmin) return ctx.reply("❌ You must be an admin.");
+    name: 'goodbye',
+    category: 'group',
+    aliases: ['gb'],
+    description: 'Toggle goodbye messages for leaving members',
+    toggleKey: 'goodbye',
 
-        if (!global.goodbyeGroups) global.goodbyeGroups = new Set();
-        
-        const action = args[0]?.toLowerCase();
-        if (action === "on") {
-            global.goodbyeGroups.add(ctx.from);
-            return ctx.reply(`✅ ${ctx.fancy("Goodbye messages are now ENABLED.")}`);
-        } 
-        if (action === "off") {
-            global.goodbyeGroups.delete(ctx.from);
-            return ctx.reply(`❌ ${ctx.fancy("Goodbye messages are now DISABLED.")}`);
+    async execute(conn, msg, args, ctx) {
+        const { from, isGroup, isOwner, userId, prefix } = ctx;
+        if (!isOwner) return conn.sendMessage(from, { text: fancy('❌ Owner only.') }, { quoted: msg });
+        if (!isGroup) return conn.sendMessage(from, { text: fancy('❌ Group only command.') }, { quoted: msg });
+
+        const action = (args[0] || '').toLowerCase();
+        if (action === '') {
+            const on = await autoToggles.get(userId, 'goodbye', from, false);
+            return conn.sendMessage(from, { text: fancy(`👋 Goodbye Messages: ${on ? '✅ ON' : '❌ OFF'}`) }, { quoted: msg });
         }
-        
-        // Show current status
-        const isOn = global.goodbyeGroups.has(ctx.from);
-        return ctx.reply(`Usage: \`.goodbye on\` or \`.goodbye off\`\n\nCurrent status: *${isOn ? "ON" : "OFF"}*`);
+        if (!['on', 'off'].includes(action)) return conn.sendMessage(from, { text: fancy(`Usage: ${prefix}goodbye on|off`) }, { quoted: msg });
+
+        const value = action === 'on';
+        await autoToggles.set(userId, 'goodbye', from, value);
+        return conn.sendMessage(from, { text: fancy(`✅ Goodbye Messages ${value ? 'ENABLED' : 'DISABLED'}.`) }, { quoted: msg });
+    },
+
+    async onGroupLeave(conn, groupJid, participants, ctx) {
+        const { userId } = ctx;
+        const on = await autoToggles.get(userId, 'goodbye', groupJid, false);
+        if (!on) return;
+
+        for (const p of participants) {
+            const jid = p.id || p;
+            try {
+                await conn.sendMessage(groupJid, {
+                    text: fancy(`👋 Goodbye @${jid.split('@')[0]}! We'll miss you.`),
+                    mentions: [jid]
+                });
+            } catch (e) {}
+        }
     }
 };
