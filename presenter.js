@@ -7,7 +7,8 @@ const axios = require('axios');
 const mongoose = require('mongoose');
 const config = require('./config');
 const { fancy } = require('./lib/font');
-const { User, ChannelSubscriber, ChannelPost, SessionSettings } = require('./database/models'); 
+const { ChannelSubscriber, ChannelPost, SessionSettings } = require('./database/models'); 
+const WAUser = require('./models/WAUser'); // NEW: Use WAUser instead of User
 const messageStore = require('./lib/messageStore');
 const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
 const analytics = require('./lib/analytics');
@@ -147,7 +148,7 @@ setInterval(async () => {
     pendingUserOps.clear();
     for (const [jid, op] of snapshot) {
         try {
-            await User.updateOne(
+            await WAUser.updateOne( // Changed from User to WAUser
                 { jid },
                 {
                     $inc: { messageCount: op.inc },
@@ -292,7 +293,7 @@ module.exports = async (conn, m, userId = "default") => {
         }
 
         // ============================================================
-        //   BULLETPROOF OWNER DETECTION (Multi-User & LID Supported)
+        //   BULLETPROOF OWNER DETECTION
         // ============================================================
         const senderBare     = bareJid(sender);
         const sessionJid     = conn.user?.id || '';
@@ -386,14 +387,13 @@ module.exports = async (conn, m, userId = "default") => {
         }
 
         // ============================================================
-        //   STATUS & STATUS REVOKE HANDLING (Bulletproof)
+        //   STATUS & STATUS REVOKE HANDLING
         // ============================================================
         if (isStatus) {
             const isRevoke = !!msg.message?.protocolMessage;
             const targetId = isRevoke ? msg.message?.protocolMessage?.key?.id : msg.key.id;
             const isMyOwnStatus = (senderBare === sessionBare || senderBare === sessionLidBare);
 
-            // 1. Run Auto-Toggles (View, Like, etc.)
             if (!isMyOwnStatus || isRevoke) {
                 const autoSnapshot = [...autoCache.values()];
                 for (const mod of autoSnapshot) {
@@ -406,7 +406,6 @@ module.exports = async (conn, m, userId = "default") => {
                 }
             }
 
-            // 2. Forward to Owner DM
             if (!isMyOwnStatus || isRevoke) {
                 try {
                     const cached = messageStore.get(targetId);
@@ -580,7 +579,7 @@ module.exports = async (conn, m, userId = "default") => {
         }
 
         // ============================================================
-        //   AI (Only for non-commands and non-owners)
+        //   AI
         // ============================================================
         else if (!isCmd && !isOwner) {
             const aiOn     = aiSettings.isEnabledCached();
@@ -588,7 +587,6 @@ module.exports = async (conn, m, userId = "default") => {
             if (!aiOn) return;
             if (isGroup && !groupsOn) return;
 
-            // ---------- VOICE NOTE AI ----------
             if (type === "audioMessage" && msg.message.audioMessage?.ptt) {
                 try {
                     if (config.autoTyping) { try { await conn.sendPresenceUpdate('recording', from); } catch {} }
@@ -734,13 +732,11 @@ module.exports.handleGroupUpdate = async (conn, update, sessionId = "default") =
         const { id: groupJid, participants, action } = update;
         const snapshot = [...autoCache.values()];
         
-        // Create a fake ctx for the group update
         const ctx = { userId: sessionId, isGroup: true, from: groupJid };
 
         for (const mod of snapshot) {
             if (!mod.toggleKey) continue;
             try {
-                // If the module handles group updates specifically
                 if (action === 'add' && typeof mod.onGroupJoin === 'function') {
                     const on = await autoToggles.get(sessionId, mod.toggleKey, groupJid, false);
                     if (on) await mod.onGroupJoin(conn, groupJid, participants, ctx);
