@@ -1,35 +1,41 @@
+// commands/autoread.js
+const autoToggles = require('../lib/autoToggles');
+const { fancy } = require('../lib/font');
+
 module.exports = {
-    name: "autoreact",
-    category: "settings",
-    aliases: ["autochatreact", "reactchat"],
-    description: "Toggle auto-react for incoming chats (on/off)",
+    name: 'autoread',
+    category: 'auto',
+    aliases: ['ar'],
+    description: 'Auto-read all incoming messages',
+    toggleKey: 'autoread',
 
     async execute(conn, msg, args, ctx) {
-        // Initialize global states if they don't exist yet
-        if (global.autoReactChat === undefined) global.autoReactChat = false;
-        if (!global.autoReactChatEmojis) global.autoReactChatEmojis = ["✅", "👍", "💯", "🔥"];
-
-        const action = args[0]?.toLowerCase();
+        const { from, isOwner, userId, prefix } = ctx;
+        if (!isOwner) return conn.sendMessage(from, { text: fancy('❌ Owner only.') }, { quoted: msg });
         
-        if (action === "set" && args.length > 1) {
-            // Allow user to set custom emojis: .autoreact set ✅,👍,🔥
-            const newEmojis = args.slice(1).join("").split(",").filter(Boolean);
-            if (newEmojis.length > 0) {
-                global.autoReactChatEmojis = newEmojis;
-                return ctx.reply(`✅ Chat Auto-React emojis updated to: ${global.autoReactChatEmojis.join(" ")}`);
-            }
+        const action = (args[0] || '').toLowerCase();
+        if (action === '') {
+            const on = await autoToggles.get(userId, 'autoread', null, false);
+            return conn.sendMessage(from, { text: fancy(`📖 Auto-Read: ${on ? '✅ ON' : '❌ OFF'}`) }, { quoted: msg });
         }
+        if (!['on', 'off'].includes(action)) return conn.sendMessage(from, { text: fancy(`Usage: ${prefix}autoread on|off`) }, { quoted: msg });
 
-        if (action !== "on" && action !== "off") {
-            return ctx.reply(
-                `💬 *Auto-React Chat* is currently: *${global.autoReactChat ? "ON" : "OFF"}*\n\n` +
-                `*Current Emojis:* ${global.autoReactChatEmojis.join(" ")}\n\n` +
-                `Usage:\n• \`.autoreact on\`\n• \`.autoreact off\`\n• \`.autoreact set ✅,👍,🔥\``
-            );
-        }
-        
-        global.autoReactChat = (action === "on");
-        
-        await ctx.reply(`✅ Auto-React Chat is now *${global.autoReactChat ? "ENABLED" : "DISABLED"}*`);
+        const value = action === 'on';
+        await autoToggles.set(userId, 'autoread', null, value);
+        return conn.sendMessage(from, { text: fancy(`✅ Auto-Read ${value ? 'ENABLED' : 'DISABLED'}.`) }, { quoted: msg });
+    },
+
+    async onMessage(conn, msg, ctx) {
+        const { userId, isStatus } = ctx;
+        const on = await autoToggles.get(userId, 'autoread', null, false);
+        if (!on) return false;
+
+        // Don't read statuses here if you want statusview to handle it
+        if (isStatus) return false; 
+
+        try {
+            await conn.readMessages([msg.key]);
+        } catch (e) {}
+        return false;
     }
 };
