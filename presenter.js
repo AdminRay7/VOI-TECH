@@ -733,17 +733,20 @@ module.exports.handleGroupUpdate = async (conn, update, sessionId = "default") =
     try {
         const { id: groupJid, participants, action } = update;
         const snapshot = [...autoCache.values()];
+        
+        // Create a fake ctx for the group update
+        const ctx = { userId: sessionId, isGroup: true, from: groupJid };
+
         for (const mod of snapshot) {
             if (!mod.toggleKey) continue;
             try {
-                const on = await autoToggles.get(sessionId, mod.toggleKey, groupJid, false);
-                if (!on) continue;
-            } catch { continue; }
-            try {
+                // If the module handles group updates specifically
                 if (action === 'add' && typeof mod.onGroupJoin === 'function') {
-                    await mod.onGroupJoin(conn, groupJid, participants);
+                    const on = await autoToggles.get(sessionId, mod.toggleKey, groupJid, false);
+                    if (on) await mod.onGroupJoin(conn, groupJid, participants, ctx);
                 } else if (action === 'remove' && typeof mod.onGroupLeave === 'function') {
-                    await mod.onGroupLeave(conn, groupJid, participants);
+                    const on = await autoToggles.get(sessionId, mod.toggleKey, groupJid, false);
+                    if (on) await mod.onGroupLeave(conn, groupJid, participants, ctx);
                 }
             } catch (e) {
                 console.error(`auto/${mod.name} (group ${action}):`, e.message);
