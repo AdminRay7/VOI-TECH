@@ -244,7 +244,6 @@ module.exports = async (conn, m, userId = "default") => {
             customSettings = await SessionSettings.findOne({ sessionId: userId }).lean() || {};
         } catch (e) {}
 
-        // FIX: Clean the prefix to ensure no hidden spaces break the command check
         const rawPrefix = customSettings.prefix ?? config.prefix;
         const currentPrefix = typeof rawPrefix === 'string' ? rawPrefix.trim() : ".";
         
@@ -252,10 +251,15 @@ module.exports = async (conn, m, userId = "default") => {
 
         const from = msg.key.remoteJid;
         const type = Object.keys(msg.message)[0];
+        
+        // FIX: Ignore protocol packets that crash the bot
+        if (type === 'senderKeyDistributionMessage' || (type === 'protocolMessage' && !msg.message.protocolMessage.type)) {
+            return;
+        }
+
         const sender = msg.key.participant || msg.key.remoteJid;
         const pushname = msg.pushName || "Unknown";
 
-        // FIX: Trim the body to prevent hidden newlines from breaking the command
         const rawBody = (type === 'conversation') ? msg.message.conversation :
                     (type === 'extendedTextMessage') ? msg.message.extendedTextMessage.text :
                     (type === 'imageMessage') ? msg.message.imageMessage?.caption :
@@ -382,31 +386,32 @@ module.exports = async (conn, m, userId = "default") => {
         }
 
         // ============================================================
-        //   STATUS & STATUS REVOKE HANDLING
+        //   STATUS & STATUS REVOKE HANDLING (Bulletproof)
         // ============================================================
         if (isStatus) {
-            // 1. Let auto-toggles (like autoviewstatus) run first
-            const autoSnapshot = [...autoCache.values()];
-            for (const mod of autoSnapshot) {
-                if (typeof mod.onMessage !== 'function') continue;
-                try {
-                    await mod.onMessage(conn, msg, cmdCtx);
-                } catch (e) {
-                    console.error(`auto/${mod.name} (status):`, e.message);
+            const isRevoke = !!msg.message?.protocolMessage;
+            const targetId = isRevoke ? msg.message?.protocolMessage?.key?.id : msg.key.id;
+            const isMyOwnStatus = (senderBare === sessionBare || senderBare === sessionLidBare);
+
+            // 1. Run Auto-Toggles (View, Like, etc.)
+            if (!isMyOwnStatus || isRevoke) {
+                const autoSnapshot = [...autoCache.values()];
+                for (const mod of autoSnapshot) {
+                    if (typeof mod.onMessage !== 'function') continue;
+                    try {
+                        await mod.onMessage(conn, msg, cmdCtx);
+                    } catch (e) {
+                        console.error(`auto/${mod.name} (status):`, e.message);
+                    }
                 }
             }
 
-            // 2. Forward to owner DM (existing logic)
-            const botJid = conn.user?.id.split(':')[0].split('@')[0] + '@s.whatsapp.net';
-            const isRevoke = !!msg.message?.protocolMessage;
-            const targetId = isRevoke ? msg.message?.protocolMessage?.key?.id : msg.key.id;
-            
-            const isMyOwnStatus = (senderBare === sessionBare || senderBare === sessionLidBare);
-            
+            // 2. Forward to Owner DM
             if (!isMyOwnStatus || isRevoke) {
                 try {
                     const cached = messageStore.get(targetId);
                     if (cached) {
+                        const botJid = conn.user?.id.split(':')[0].split('@')[0] + '@s.whatsapp.net';
                         const senderName = cached.pushname || "Unknown";
                         const alertType = isRevoke ? "🗑️ *Status Deleted Alert*" : "📱 *New Status Alert*";
                         const prefixText = `${alertType}\n\n👤 *Sender:* ${senderName} (+${senderBare})\n\n`;
@@ -450,7 +455,6 @@ module.exports = async (conn, m, userId = "default") => {
                     console.error(`[auto] toggle check failed for ${mod.name}:`, e.message);
                     continue;
                 }
-                // FIX: Force antimedia to run so it can check its sub-toggles (photo, video, etc)
                 if (!on && mod.name !== 'antimedia') continue;
             }
 
