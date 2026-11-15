@@ -5,36 +5,115 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Register - 303-XMD</title>
   <style>
-    :root { --primary: #6366f1; --primary-hover: #4f46e5; --bg: #0a0a0f; }
-    body { background: var(--bg); color: white; font-family: 'Inter', sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background-image: radial-gradient(circle at 50% 0%, rgba(99, 102, 241, 0.15) 0%, transparent 50%); }
-    .auth-box { background: rgba(20, 20, 30, 0.8); padding: 40px; border-radius: 12px; width: 100%; max-width: 400px; border: 1px solid rgba(255,255,255,0.1); backdrop-filter: blur(10px); }
-    h2 { text-align: center; margin-bottom: 20px; font-size: 24px; }
-    input { width: 100%; padding: 14px; margin: 10px 0; background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.1); color: white; border-radius: 8px; box-sizing: border-box; font-size: 15px; outline: none; }
-    input:focus { border-color: var(--primary); }
-    button { width: 100%; padding: 14px; background: var(--primary); border: none; color: white; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 16px; margin-top: 15px; transition: 0.2s; }
-    button:hover { background: var(--primary-hover); }
+    :root { 
+      --primary: #6366f1; 
+      --primary-hover: #4f46e5; 
+      --bg: #06060a; 
+      --text: #f0f0f5;
+      --error: #f87171;
+      --success: #4ade80;
+    }
+    
+    body { 
+      background: var(--bg); 
+      color: var(--text); 
+      font-family: 'Inter', -apple-system, sans-serif; 
+      display: flex; justify-content: center; align-items: center; 
+      min-height: 100vh; margin: 0; 
+      background-image: radial-gradient(circle at 50% 0%, rgba(99, 102, 241, 0.15) 0%, transparent 50%); 
+    }
+
+    .auth-box { 
+      background: rgba(20, 20, 30, 0.7); 
+      padding: 40px; border-radius: 16px; 
+      width: 100%; max-width: 400px; 
+      border: 1px solid rgba(255,255,255,0.08); 
+      backdrop-filter: blur(12px); 
+      box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+    }
+
+    h2 { text-align: center; margin-bottom: 25px; font-size: 26px; font-weight: 700; }
+    
+    input { 
+      width: 100%; padding: 15px; margin: 8px 0; 
+      background: rgba(0,0,0,0.3); 
+      border: 1px solid rgba(255,255,255,0.1); 
+      color: white; border-radius: 10px; 
+      box-sizing: border-box; font-size: 15px; outline: none; 
+      transition: 0.2s;
+    }
+    
+    input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.3); }
+    
+    button { 
+      width: 100%; padding: 15px; 
+      background: var(--primary); border: none; color: white; 
+      border-radius: 10px; cursor: pointer; 
+      font-weight: 600; font-size: 16px; margin-top: 20px; 
+      transition: 0.2s; 
+    }
+    
+    button:hover { background: var(--primary-hover); transform: translateY(-1px); }
+    button:disabled { background: #3730a3; cursor: not-allowed; transform: none; }
+    
     .link { text-align: center; margin-top: 20px; font-size: 14px; color: #8b8ba8; }
     .link a { color: var(--primary); text-decoration: none; font-weight: 600; }
-    .error { color: #f87171; text-align: center; font-size: 14px; margin-top: 10px; display: none; }
+    .link a:hover { text-decoration: underline; }
+    
+    .msg { text-align: center; font-size: 14px; margin-top: 15px; display: none; font-weight: 500; }
+    .msg.error { color: var(--error); }
+    .msg.success { color: var(--success); }
   </style>
 </head>
 <body>
   <div class="auth-box">
     <h2>Create Account</h2>
-    <input type="email" id="email" placeholder="Email Address (Admin Email for Admin role)">
-    <input type="password" id="password" placeholder="Password">
-    <button onclick="register()">Register</button>
-    <div class="error" id="error-msg"></div>
+    
+    <input type="email" id="email" placeholder="Email Address" autocomplete="email">
+    <input type="password" id="password" placeholder="Password" autocomplete="new-password">
+    <input type="password" id="confirmPassword" placeholder="Confirm Password" autocomplete="new-password">
+    
+    <button id="btn" onclick="register()">Register</button>
+    
+    <div class="msg" id="message"></div>
+    
     <div class="link">Already have an account? <a href="/login">Login</a></div>
   </div>
 
   <script>
     async function register() {
-      const email = document.getElementById("email").value;
+      const email = document.getElementById("email").value.trim();
       const password = document.getElementById("password").value;
-      const errorEl = document.getElementById("error-msg");
+      const confirmPassword = document.getElementById("confirmPassword").value;
+      
+      const btn = document.getElementById("btn");
+      const msg = document.getElementById("message");
 
-      if (!email || !password) return alert("Please fill all fields");
+      // Reset message
+      msg.style.display = "none";
+      msg.className = "msg";
+
+      // Validation
+      if (!email || !password || !confirmPassword) {
+        msg.textContent = "Please fill in all fields.";
+        msg.className = "msg error";
+        return;
+      }
+
+      if (password !== confirmPassword) {
+        msg.textContent = "Passwords do not match.";
+        msg.className = "msg error";
+        return;
+      }
+
+      if (password.length < 6) {
+        msg.textContent = "Password must be at least 6 characters long.";
+        msg.className = "msg error";
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = "Creating account...";
 
       try {
         const res = await fetch("/api/register", {
@@ -42,15 +121,24 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email, password })
         });
+        
         const data = await res.json();
 
-        if (data.error) throw new Error(data.error);
+        if (!res.ok) throw new Error(data.error || "Registration failed");
 
-        alert("Registration successful! Please login.");
-        window.location.href = "/login";
+        // Success
+        msg.textContent = "Registration successful! Redirecting to login...";
+        msg.className = "msg success";
+        
+        setTimeout(() => {
+          window.location.href = "/login";
+        }, 2000);
+
       } catch (err) {
-        errorEl.style.display = "block";
-        errorEl.textContent = err.message;
+        msg.textContent = err.message;
+        msg.className = "msg error";
+        btn.disabled = false;
+        btn.textContent = "Register";
       }
     }
   </script>
