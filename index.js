@@ -48,7 +48,7 @@ const config = require("./config");
 const handler = require("./presenter"); 
 const User = require("./models/User");
 const Settings = require("./models/Settings");
-const SessionModel = require("./models/Session"); // NEW: Session Model
+const SessionModel = require("./models/Session"); 
 
 const app = express();
 app.use(express.json());
@@ -59,15 +59,23 @@ app.use(express.json());
 app.post("/api/register", async (req, res) => {
     try {
         const { email, password } = req.body;
-        let user = await User.findOne({ email });
+        
+        // FIX: Trim and lowercase email for consistency
+        const cleanEmail = email.trim().toLowerCase();
+
+        let user = await User.findOne({ email: cleanEmail });
         if (user) return res.status(400).json({ error: "Email already exists" });
 
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
-        const role = (email.toLowerCase() === config.adminEmail.toLowerCase()) ? "admin" : "user";
+        
+        // Compare against your config admin email
+        const adminEmail = (config.adminEmail || "").toLowerCase();
+        const role = (cleanEmail === adminEmail) ? "admin" : "user";
 
-        user = new User({ email, password: hashedPassword, role });
+        user = new User({ email: cleanEmail, password: hashedPassword, role });
         await user.save();
+        
         res.json({ success: true, message: "Registered successfully" });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -77,13 +85,22 @@ app.post("/api/register", async (req, res) => {
 app.post("/api/login", async (req, res) => {
     try {
         const { email, password } = req.body;
-        const user = await User.findOne({ email });
-        if (!user) return res.status(400).json({ error: "Invalid credentials" });
+        
+        // FIX: Trim spaces and force lowercase to match the registration step
+        const cleanEmail = email.trim().toLowerCase();
+
+        const user = await User.findOne({ email: cleanEmail });
+        if (!user) {
+            console.log(`[Login] User not found: ${cleanEmail}`);
+            return res.status(400).json({ error: "Invalid credentials" });
+        }
 
         const validPass = await bcrypt.compare(password, user.password);
-        if (!validPass) return res.status(400).json({ error: "Invalid credentials" });
+        if (!validPass) {
+            console.log(`[Login] Password mismatch for: ${cleanEmail}`);
+            return res.status(400).json({ error: "Invalid credentials" });
+        }
 
-        // FIX: Fallback secret prevents the "Illegal arguments" crash
         const secret = process.env.JWT_SECRET || "303-XMD-super-secret-default-key";
         const token = jwt.sign({ id: user._id, role: user.role, email: user.email }, secret, { expiresIn: "7d" });
         
@@ -300,7 +317,6 @@ async function bootSocket(sessionId, session, isResuming = false) {
                 const cleanNumber = conn.user?.id.split(':')[0].split('@')[0];
                 const jid = `${cleanNumber}@s.whatsapp.net`;
                 
-                // Get the random session ID we generated
                 const friendlyId = session.friendlyId || sessionId;
                 const welcomeText = `👋 *303-XMD*\n\nIs online and ready!\n\nSession: *${friendlyId}*`;
 
@@ -362,11 +378,10 @@ async function requestPairingCode(sessionId, phoneNumber) {
     session.pairing = formatted;
     session.pairingNumber = phoneNumber;
 
-    // 🔥 GENERATE RANDOM SESSION ID
+    // GENERATE RANDOM SESSION ID
     const randomSessionId = Math.random().toString(36).substring(2, 10) + Math.floor(Math.random() * 999);
     session.friendlyId = randomSessionId; 
     
-    // Save to MongoDB
     try {
         await SessionModel.findOneAndUpdate(
             { phoneNumber }, 
