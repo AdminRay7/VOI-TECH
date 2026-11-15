@@ -125,6 +125,33 @@ app.post("/api/settings/:phone", authMiddleware, async (req, res) => {
 });
 
 // ============================================================
+// AI & ADMIN API ROUTES (For the Web Panel)
+// ============================================================
+app.post("/api/ai/toggle", authMiddleware, (req, res) => {
+    // In a real app, you would save this to the DB. For now, we simulate success.
+    res.json({ success: true, enabled: req.body.enabled });
+});
+
+app.post("/api/ai/chat", authMiddleware, async (req, res) => {
+    try {
+        const aiChat = require('./lib/aiChat');
+        const reply = await aiChat.askAI(req.body.message, "web_" + req.user.id, null);
+        res.json({ reply });
+    } catch (e) {
+        res.json({ error: "AI is currently offline." });
+    }
+});
+
+app.get("/api/admin/stats", authMiddleware, (req, res) => {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    res.json({
+        totalUsers: global.sessions ? global.sessions.size : 0,
+        cpuUsage: Math.floor(Math.random() * 40) + 10, // Simulated
+        memoryUsage: Math.floor(Math.random() * 60) + 20 // Simulated
+    });
+});
+
+// ============================================================
 // WEB ROUTES
 // ============================================================
 app.get("/login", (req, res) => res.sendFile(path.join(__dirname, "public", "login.html")));
@@ -133,6 +160,8 @@ app.get("/", (req, res) => res.sendFile(path.join(__dirname, "public", "dashboar
 app.get("/dashboard", (req, res) => res.sendFile(path.join(__dirname, "public", "dashboard.html")));
 app.get("/settings", (req, res) => res.sendFile(path.join(__dirname, "public", "settings.html")));
 app.get("/pair", (req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
+app.get("/ai", (req, res) => res.sendFile(path.join(__dirname, "public", "ai.html")));
+app.get("/admin", (req, res) => res.sendFile(path.join(__dirname, "public", "admin.html")));
 app.use(express.static(path.join(__dirname, "public"), { extensions: ['html'] }));
 
 // ============================================================
@@ -232,6 +261,8 @@ async function bootSocket(sessionId, session, isResuming = false) {
     // 1. Messages
     conn.ev.on("messages.upsert", async (m) => {
         try {
+            // CRITICAL FIX: Only process "notify" messages. Ignore "append" to prevent crashes.
+            if (m.type !== "notify") return; 
             await handler(conn, m, sessionId);
         } catch (err) {
             console.error(`[${sessionId}] handler error:`, err.message);
@@ -241,7 +272,6 @@ async function bootSocket(sessionId, session, isResuming = false) {
     // 2. Group Updates (Welcome/Goodbye, Antilink)
     conn.ev.on('group-participants.update', async (update) => {
         try {
-            // FIX: Pass sessionId so auto-toggles match correctly
             await handler.handleGroupUpdate(conn, update, sessionId);
         } catch (e) { console.error("group-participants handler error:", e.message); }
     });
@@ -249,7 +279,6 @@ async function bootSocket(sessionId, session, isResuming = false) {
     // 3. Calls (Anti-Call)
     conn.ev.on('call', async (calls) => {
         try {
-            // FIX: Pass sessionId
             await handler.handleCallEvent(conn, calls, sessionId);
         } catch (e) { console.error("call handler error:", e.message); }
     });
