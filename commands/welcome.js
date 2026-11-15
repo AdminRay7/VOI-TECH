@@ -1,27 +1,46 @@
-const config = require("../config");
+// commands/welcome.js
+const autoToggles = require('../lib/autoToggles');
+const { fancy } = require('../lib/font');
+const config = require('../config');
 
 module.exports = {
-    name: "welcome",
-    category: "group",
-    description: "Toggle welcome messages on/off",
-    async execute(conn, msg, args, ctx) {
-        if (!ctx.isGroup) return ctx.reply("❌ This command is only for groups.");
-        if (!ctx.isOwner && !ctx.isAdmin) return ctx.reply("❌ You must be an admin.");
+    name: 'welcome',
+    category: 'group',
+    aliases: ['wc'],
+    description: 'Toggle welcome messages for new members',
+    toggleKey: 'welcome',
 
-        if (!global.welcomeGroups) global.welcomeGroups = new Set();
-        
-        const action = args[0]?.toLowerCase();
-        if (action === "on") {
-            global.welcomeGroups.add(ctx.from);
-            return ctx.reply(`✅ ${ctx.fancy("Welcome messages are now ENABLED.")}`);
-        } 
-        if (action === "off") {
-            global.welcomeGroups.delete(ctx.from);
-            return ctx.reply(`❌ ${ctx.fancy("Welcome messages are now DISABLED.")}`);
+    async execute(conn, msg, args, ctx) {
+        const { from, isGroup, isOwner, userId, prefix } = ctx;
+        if (!isOwner) return conn.sendMessage(from, { text: fancy('❌ Owner only.') }, { quoted: msg });
+        if (!isGroup) return conn.sendMessage(from, { text: fancy('❌ Group only command.') }, { quoted: msg });
+
+        const action = (args[0] || '').toLowerCase();
+        if (action === '') {
+            const on = await autoToggles.get(userId, 'welcome', from, false);
+            return conn.sendMessage(from, { text: fancy(`👋 Welcome Messages: ${on ? '✅ ON' : '❌ OFF'}`) }, { quoted: msg });
         }
-        
-        // Show current status
-        const isOn = global.welcomeGroups.has(ctx.from);
-        return ctx.reply(`Usage: \`.welcome on\` or \`.welcome off\`\n\nCurrent status: *${isOn ? "ON" : "OFF"}*`);
+        if (!['on', 'off'].includes(action)) return conn.sendMessage(from, { text: fancy(`Usage: ${prefix}welcome on|off`) }, { quoted: msg });
+
+        const value = action === 'on';
+        await autoToggles.set(userId, 'welcome', from, value);
+        return conn.sendMessage(from, { text: fancy(`✅ Welcome Messages ${value ? 'ENABLED' : 'DISABLED'}.`) }, { quoted: msg });
+    },
+
+    async onGroupJoin(conn, groupJid, participants, ctx) {
+        const { userId } = ctx;
+        const on = await autoToggles.get(userId, 'welcome', groupJid, false);
+        if (!on) return;
+
+        for (const p of participants) {
+            const jid = p.id || p;
+            try {
+                const meta = await conn.groupMetadata(groupJid);
+                await conn.sendMessage(groupJid, {
+                    text: fancy(`👋 Welcome to *${meta.subject}*!\n\n@${jid.split('@')[0]}, we're glad to have you here.`),
+                    mentions: [jid]
+                });
+            } catch (e) {}
+        }
     }
 };
