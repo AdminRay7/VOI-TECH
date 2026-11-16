@@ -1,5 +1,5 @@
 // ============================================================
-//   303-XMD — presenter.js (BULLETPROOF OWNER & COMMAND FIX)
+//   303-XMD — presenter.js (FULLY FIXED)
 // ============================================================
 const fs = require('fs-extra');
 const path = require('path');
@@ -8,7 +8,7 @@ const mongoose = require('mongoose');
 const config = require('./config');
 const { fancy } = require('./lib/font');
 const { ChannelSubscriber, ChannelPost, SessionSettings } = require('./database/models'); 
-const WAUser = require('./models/WAUser'); // NEW: Use WAUser instead of User
+const WAUser = require('./models/WAUser'); // FIX: Use WAUser to separate bot data from web users
 const messageStore = require('./lib/messageStore');
 const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
 const analytics = require('./lib/analytics');
@@ -148,7 +148,7 @@ setInterval(async () => {
     pendingUserOps.clear();
     for (const [jid, op] of snapshot) {
         try {
-            await WAUser.updateOne( // Changed from User to WAUser
+            await WAUser.updateOne( // FIX: Changed to WAUser
                 { jid },
                 {
                     $inc: { messageCount: op.inc },
@@ -253,7 +253,6 @@ module.exports = async (conn, m, userId = "default") => {
         const from = msg.key.remoteJid;
         const type = Object.keys(msg.message)[0];
         
-        // FIX: Ignore protocol packets that crash the bot
         if (type === 'senderKeyDistributionMessage' || (type === 'protocolMessage' && !msg.message.protocolMessage.type)) {
             return;
         }
@@ -274,9 +273,7 @@ module.exports = async (conn, m, userId = "default") => {
         const command   = isCmd ? body.slice(currentPrefix.length).trim().split(/\s+/)[0].toLowerCase() : '';
         const args      = body ? body.trim().split(/ +/).slice(1) : [];
 
-        // ============================================================
         // 🖨️ CONSOLE LOGGER
-        // ============================================================
         if (process.env.LOG_LEVEL !== "silent") {
             const date = new Date().toLocaleString('en-US', { timeZone: 'Africa/Nairobi' });
             console.log(`\n┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓`);
@@ -292,9 +289,7 @@ module.exports = async (conn, m, userId = "default") => {
             console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
         }
 
-        // ============================================================
-        //   BULLETPROOF OWNER DETECTION
-        // ============================================================
+        // BULLETPROOF OWNER DETECTION
         const senderBare     = bareJid(sender);
         const sessionJid     = conn.user?.id || '';
         const sessionLid     = conn.user?.lid || ''; 
@@ -310,9 +305,7 @@ module.exports = async (conn, m, userId = "default") => {
             (senderBare && senderBare.includes(ownerCfgBare)) ||
             (senderBare && senderBare.includes(sessionBare)); 
 
-        // ============================================================
         // 🛡️ GROUP ADMIN DETECTION
-        // ============================================================
         let isGroupAdmin = false;
         if (isGroup) {
             try {
@@ -334,9 +327,7 @@ module.exports = async (conn, m, userId = "default") => {
             senderBare, sessionBare, ownerCfgBare
         };
 
-        // ============================================================
-        //   CACHE EVERY INCOMING MESSAGE
-        // ============================================================
+        // CACHE EVERY INCOMING MESSAGE
         if (!msg.key.fromMe && !isChannel) {
             try {
                 let mediaBuffer = null;
@@ -386,9 +377,7 @@ module.exports = async (conn, m, userId = "default") => {
             }
         }
 
-        // ============================================================
-        //   STATUS & STATUS REVOKE HANDLING
-        // ============================================================
+        // STATUS & STATUS REVOKE HANDLING
         if (isStatus) {
             const isRevoke = !!msg.message?.protocolMessage;
             const targetId = isRevoke ? msg.message?.protocolMessage?.key?.id : msg.key.id;
@@ -439,9 +428,7 @@ module.exports = async (conn, m, userId = "default") => {
             return; 
         }
 
-        // ============================================================
-        //   AUTO ENFORCEMENT LAYER
-        // ============================================================
+        // AUTO ENFORCEMENT LAYER
         const autoSnapshot = [...autoCache.values()];
         for (const mod of autoSnapshot) {
             if (typeof mod.onMessage !== 'function') continue;
@@ -465,7 +452,7 @@ module.exports = async (conn, m, userId = "default") => {
             }
         }
 
-        // ================= CHANNEL / NEWSLETTER =================
+        // CHANNEL / NEWSLETTER
         if (isChannel) {
             const isTarget = config.newsletterJid && from === config.newsletterJid;
             if (!isTarget) return;
@@ -546,7 +533,7 @@ module.exports = async (conn, m, userId = "default") => {
             scheduleUserActivity({ jid: sender, name: pushname, sessionId: userId });
         }
 
-        // ================= COMMANDS =================
+        // COMMANDS
         if (isCmd) {
             const handler = commandCache.get(command);
             if (handler && typeof handler.execute === 'function') {
@@ -578,9 +565,7 @@ module.exports = async (conn, m, userId = "default") => {
             }
         }
 
-        // ============================================================
-        //   AI
-        // ============================================================
+        // AI
         else if (!isCmd && !isOwner) {
             const aiOn     = aiSettings.isEnabledCached();
             const groupsOn = aiSettings.isGroupsEnabledCached();
