@@ -1,13 +1,3 @@
-name: Deploy WhatsApp Bot
-
-on:
-  push:
-    branches: [ main ]
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
       - name: Deploy to VPS via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -15,6 +5,8 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
+            echo "SSH connection successful!"
+            whoami
             cd ~/VDI-TECH
             git pull origin main
             npm install
