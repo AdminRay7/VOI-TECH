@@ -2,7 +2,7 @@ name: Deploy WhatsApp Bot
 
 on:
   push:
-    branches: [ main ] # Change to 'master' if your branch is named master
+    branches: [ main ]
 
 jobs:
   deploy:
@@ -16,7 +16,6 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd ~/VDI-TECH
-            git pull origin main  # Change to master if needed
+            git pull origin main
             npm install
-            # Using the absolute path to PM2 so GitHub's shell can find it
             /home/ubuntu/.nvm/versions/node/v26.13.1/bin/pm2 restart index
