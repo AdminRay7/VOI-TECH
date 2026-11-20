@@ -1,0 +1,22 @@
+name: Deploy WhatsApp Bot
+
+on:
+  push:
+    branches: [ main ] # Change to 'master' if your branch is named master
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to VPS via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ~/VDI-TECH
+            git pull origin main  # Change to master if needed
+            npm install
+            # Using the absolute path to PM2 so GitHub's shell can find it
+            /home/ubuntu/.nvm/versions/node/v26.13.1/bin/pm2 restart index
